@@ -52,3 +52,7 @@ Here's a high-level overview of the Snakemake pipeline, generated via `snakemake
 
 ![image](https://user-images.githubusercontent.com/167135/211419041-54664bc2-3d5d-43ad-9dca-16d62da07d7b.png)
 
+## Running
+`
+$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going
+`
