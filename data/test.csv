@@ -1,0 +1,3 @@
+﻿sample_id,source,cell_type,method,description,path_R1,path_R2,md5sum_R1,md5sum_R2,internal_path,batch,batch_id,sequencing_facility,target_depth,indexing_pcr_cycles,ng_dna_for_prep,ng_unmethylated_lambda,sorted_cells,ng_sorted_dna
+Test_SAMPLE1,plasma,cfdna,emseq,,1.fastq.gz,2.fastq.gz,62f0886509be1186c9b71f9f24e7ea27,a1cb70a3f16fe94e942c8d8f2fbeb8fd,,,,medgenome,,,,,,
+

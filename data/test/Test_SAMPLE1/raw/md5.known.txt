@@ -1,0 +1,2 @@
+62f0886509be1186c9b71f9f24e7ea27	../data/test/Test_SAMPLE1/raw/1.fastq.gz
+a1cb70a3f16fe94e942c8d8f2fbeb8fd	../data/test/Test_SAMPLE1/raw/2.fastq.gz
