@@ -3,9 +3,35 @@
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
 
 
-## Reference Genome
+## Getting Started
 
-I chose GRCh38, with these specifics:
+### Installation
+1. Clone this repo: `git clone https://github.com/semenko/serpent-methylation-pipeline.git`
+1. Install mamba: `conda install -c conda-forge mamba` or [mambaforge](https://github.com/conda-forge/miniforge#mambaforge)
+1. Install snakemake: `mamba install -c bioconda -c conda-forge snakemake`
+1. (Optionally) Test install the dependencies: `mamba env create -f workflow/envs/env.yaml`
+
+### Test Run
+`
+$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going
+`
+
+### Data Definition
+
+
+### Expected Output
+
+
+### Production Runs
+
+
+## Pipeline Details
+
+This pipeline was designed for highly reproducible, explainable alignments and analysis of epigenetic sequencing data.
+
+### Reference Genome
+
+I chose **GRCh38**, with these specifics:
 - No patches
 - Includes the hs38d1 decoy
 - Includes Alt chromosomes
@@ -14,25 +40,34 @@ I chose GRCh38, with these specifics:
 
 You can see a good explanation of the rationale for some of these components at [this NCBI explainer](https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/README_analysis_sets.txt).
 
-## Requirements
+### Requirements
 
-All software requirements are specified in `env.yaml` except for:
-- biscuit itself, due to [this issue](https://github.com/huishenlab/biscuit/pull/31)
+All software requirements are specified in [env.yaml](workflow/envs/env.yaml).
 
-This uses a few ~unique packages, including
-- NEB's [mark-nonconverted-reads.py package](https://github.com/nebiolabs/mark-nonconverted-reads)
+Most are relatively common, but a few are semi-unique:
+- [biscuit](https://github.com/huishenlab/biscuit) (for alignment)
+- NEB's [mark-nonconverted-reads](https://github.com/nebiolabs/mark-nonconverted-reads) (to mark partially converted reads)
 
-Note, I previously experimented with [wgbs_tools](https://github.com/nloyfer/wgbs_tools), which defines nice .pat/.beta formats, but its licensing is too restrictive.
+biscuit was chosen after a comparison with bwa-meth and bismark — its latest version was the most flexible with extremely well annotated .bams (some critical tags are missing from bwa-meth for identifying read level methylation, and would require patching MethylDackel to extract data).
 
-## Trimming Approach
+I briefly experimented with [wgbs_tools](https://github.com/nloyfer/wgbs_tools) (which defines nice .pat/.beta formats) but its licensing is too restrictive to use.
 
-For **EMseq**, I trim 10 bp everywhere.
+### Trimming Approach
 
-For **BSseq**, I trim 15 BP of R2 5', and 10 bp everywhere else.
+I chose a relatively conservative approach to trimming -- which is needed due to end-repair bias, adaptase bias, and more. 
 
-For all reads, I set `--trim_poly_g` (see [this note](https://sequencing.qcfail.com/articles/illumina-2-colour-chemistry-can-overcall-high-confidence-g-bases/)), and set a `--length_required` (minimum read length) of 15 bp.
+For **EMseq**, I trim 10 bp everywhere, after personal QC and offline discussions with NEB. See [my notes here](https://github.com/FelixKrueger/Bismark/issues/509).
 
-Notably I do NOT do quality filtering here (I set `--disable_quality_filtering`), and save this for downstream analyses as desired. (In small-scale tests, early quality filtering doesn't seem to impact alignment results in any appreciable way.)
+For **BSseq**, I trim 15 bp 5' R2, and 10 bp everywhere else due to adaptase bias.
+
+For all reads, I set `--trim_poly_g` (due to [two color bias](https://sequencing.qcfail.com/articles/illumina-2-colour-chemistry-can-overcall-high-confidence-g-bases/)) and set a `--length_required` (minimum read length) of 10 bp.
+
+### No Quality Filtering
+
+Notably I do NOT do quality filtering here (I set `--disable_quality_filtering`), and save this for downstream analyses as desired.
+
+I experimented with more stringent quality filtering early on, and found it had little yield / performance benefit. 
+
 
 ## Background & Inspiration
 
@@ -48,11 +83,7 @@ For similar pipelines and inspiration, see:
 
 ## Pipeline Graph
 
-Here's a high-level overview of the Snakemake pipeline, generated via `snakemake --rulegraph | dot -Tpng > rules.png`
+Here's a high-level overview of the Snakemake pipeline (generated via `snakemake --rulegraph | dot -Tpng > rules.png`)
 
 ![image](https://user-images.githubusercontent.com/167135/211419041-54664bc2-3d5d-43ad-9dca-16d62da07d7b.png)
 
-## Running
-`
-$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going
-`
