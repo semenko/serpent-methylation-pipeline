@@ -2,6 +2,20 @@
 
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
 
+At a high level, this pipeline reproducibly:
+- Builds a reference genome
+- Trims & (minimally) filters reads
+- Aligns & calls methylation using [biscuit](https://github.com/huishenlab/biscuit)
+- Flags non-converted reads
+- Generates standardized outputs & QC including
+    - FastQC
+    - fastp
+    - Biscuit QC
+    - samtools stats
+    - MethylDackel mbias plots
+    - Goleft covplots
+    - epibed/epiread files
+- Runs multiqc across entire projects
 
 ## Getting Started
 
@@ -20,6 +34,29 @@ $ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --re
 
 
 ### Expected Output
+
+Raw data files from [data](../data) are processed and analyzed by this snakemake workflow. Within each project directory, the output is (roughly) structured as:
+
+    SAMPLE_01/                  # e.g. melanoma / crc / healthy, etc.
+    │   SAMPLE.bam              # The final alignment file 
+    |   SAMPLE.bam.bai          #   (and its index)
+    |── biscuit_qc/             # biscuit QC.sh text files
+    |── epibeds/                # epibed files (bgzip-compressed & tabix-indexed)
+    ├── fastp/                  # fastp statistics & logs
+    ├── fastqc/                 # fastqc graphs 
+    ├── goleft/                 # goleft coverage plots
+    ├── logs/                   # runlogs from each pipeline component
+    ├── methyldackel/           # mbias plots
+    ├── raw/
+    │   ├── ...fastq.gz         # Raw reads
+    |   ├── ...md5.txt          # Checksums and validation
+    ├── samtools/               # samtools statistics
+    SAMPLE_02/
+    ...
+    ...
+    multiqc/                    # A project-level multiqc stats across all data
+
+Note each project also has a `_subsampled` directory with identical structure, which is the result of the pipeline run on only 10M reads/sample.
 
 
 ### Production Runs

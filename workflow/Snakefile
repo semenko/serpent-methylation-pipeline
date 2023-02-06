@@ -30,7 +30,7 @@ DATA_PATH = "../data"
 data_config_files = glob.glob(f"{DATA_PATH}/healthy.csv")
 
 # Uncomment for test runs
-# data_config_files = glob.glob(f"{DATA_PATH}/test.csv")
+data_config_files = glob.glob(f"{DATA_PATH}/test.csv")
 
 # Only operate on EM-seq files (ignore BS-seq)
 EMSEQ_ONLY = True
