@@ -461,6 +461,7 @@ rule biscuit_epiread:
     input:
         bam = rules.samtools_fixmate_sort_markdup.output.bam,
         masked_reference_genome = ancient(rules.mask_reference_fasta.output.masked_reference_genome),
+        index = rules.samtools_index.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/epibeds/{sample}.epibed.gz",
         "{DATA_PATH}/{experiment}/{sample}/epibeds/{sample}.epibed.gz.tbi"
