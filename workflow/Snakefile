@@ -21,9 +21,10 @@ import sys
 
 import pandas as pd
 from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
+from snakemake.workflow import Workflow
 
-# Must be relative for symlink in wgbs_tools (!)
-DATA_PATH = "../data"
+# Get full path based on Snakemake location
+DATA_PATH = os.path.join(os.path.dirname(workflow.snakefile), "../data")
 
 # Loop over the experiment definition files (e.g. melanoma.csv, crc.csv)
 data_config_files = glob.glob(f"{DATA_PATH}/healthy.csv")
