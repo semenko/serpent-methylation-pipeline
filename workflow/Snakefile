@@ -595,7 +595,7 @@ rule biscuit_bed:
         out_dir="{DATA_PATH}/{experiment}/{sample}/beds/",
         sample_str="{sample}",
         minimum_reads=3,
-    threads: 4
+    threads: 10
     shell:
         """
         biscuit pileup -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log.pileup} | \
@@ -765,6 +765,8 @@ rule multiqc:
         "multiqc --outdir {params.out_dir} --force --verbose --interactive --exclude snippy {params.in_dir} >{log} 2>&1"
 
 
+ruleorder: md5sum > seqtk_subsample        
+        
 # nfty.sh push for the whole job
 onsuccess:
     shell(
