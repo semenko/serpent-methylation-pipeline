@@ -1,5 +1,6 @@
-# General Settings
 To configure this workflow, currently you can edit `workflow/Snakefile` to specify the files you want to operate on.
+
+# General Settings
 
 (In the future, I'll add a .yaml to specify configuration files, PR's welcome!)
 
