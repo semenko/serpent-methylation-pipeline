@@ -27,8 +27,10 @@ At a high level, this pipeline reproducibly:
 
 ### Test Run
 `
-$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
+$ nice snakemake --cores 50 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
 `
+
+After removing the `--dry-run` flag, this will download reference genomes and build indices.
 
 ### Data Definition
 
