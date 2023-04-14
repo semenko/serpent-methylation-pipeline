@@ -23,11 +23,11 @@ At a high level, this pipeline reproducibly:
 1. Clone this repo: `git clone https://github.com/semenko/serpent-methylation-pipeline.git`
 1. Install mamba: `conda install -c conda-forge mamba` or [mambaforge](https://github.com/conda-forge/miniforge#mambaforge)
 1. Install snakemake: `mamba install -c bioconda -c conda-forge snakemake`
-1. (Optionally) Test install the dependencies: `mamba env create -f workflow/envs/env.yaml`
+1. (Optionally) Test install the dependencies: `mamba env create -n test_env -f serpent-methylation-pipeline/workflow/envs/env.yaml`
 
 ### Test Run
 `
-$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going
+$ nice snakemake --cores 40 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
 `
 
 ### Data Definition
