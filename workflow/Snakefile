@@ -224,9 +224,8 @@ rule mask_reference_fasta:
 
 
 ###############
-## Build biscuit indices
+## Build indices
 ###############
-
 
 ### biscuit index
 # Runs once to generate biscuit indices
@@ -295,6 +294,44 @@ rule bwa_meth_index:
     shell:
         "bwameth.py index-mem2 {input.masked_reference_genome} >{log.index} 2>&1"
 
+
+### wgbs_tools
+# Build wgbs_tools, requires libboost
+# Bit of a hackjob to build this here...
+rule wgbs_build:
+    conda: "envs/env.yaml"
+    input:
+        # git_submodule_init = ancient(rules.git_submodule_init.output)
+    output:
+        "wgbs_tools/src/python/wgbs_tools.py"
+    log:
+        "wgbs_tools/snakemake_build.log.txt"
+    shell:
+        "cd wgbs_tools && python setup.py >{log} 2>&1"
+
+# wgbs_tools index
+rule wgbs_tools_index:
+    conda: "envs/env.yaml"
+    input:
+        wgbs_build = rules.wgbs_build.output,
+        reference = rules.mask_reference_fasta.output.masked_reference_genome
+    output:
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/chrome.size",
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.bed.gz",
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.bed.gz.csi",
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.chrome.size",
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/rev.CpG.bed.gz.tbi"
+    log:
+        "{DATA_PATH}/reference/wgbs_tools/snakemake_init_genome.log.txt"
+    shell:
+        # NOTE: The -f force in init_genome seems to be required for wgbs_tools to build in a symlinked directory,
+        # otherwise it seems to think the index already exists (when it doesn't).
+        # NOTE: Consider just run the ln -s if path exists, otherwise this gets re-build on other nodes if there are multiple running nodes
+        # and a shared resource directory?
+        """
+        ln -s ../{DATA_PATH}/reference/wgbs_tools/ ./wgbs_tools/references
+        ./wgbs_tools/wgbstools init_genome GRCh38-DAC-U2AF1 --fasta_path {input.reference} -f >{log} 2>&1
+        """
 
 ###############
 ### Core Pipeline Steps
@@ -444,7 +481,10 @@ rule bwa_meth:
         bwameth_err = "{DATA_PATH}/{experiment}/{sample}/logs/bwameth.log.txt"
     benchmark:
         "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/bwameth.txt"
-    threads: lambda x: len(os.sched_getaffinity(0))-10  # RIS allocation -- all cores but 10?  # round(len(os.sched_getaffinity(0))/2
+    # On some cluster executions (e.g., LSF/RIS), we need to limit the number of threads a bit, becuase at runtime,
+    # if the execution group exceeds the allocation, it's killed. Here, we limit to N-8.
+    # The 8 comes from the rest of the thread group: 3 for fastp, 1 for mark nonconverted, 3 for fixmate/sort/markdup
+    threads: lambda x: len(os.sched_getaffinity(0))-8  # All cores but 8
     resources:
        mem_mb = 72000
     shell:
@@ -744,6 +784,29 @@ rule goleft_indexcov:
         "goleft indexcov --directory {params.out_dir} {input.bam} >{log} 2>&1"
 
 
+### wgbs_tools pat/beta file formats
+rule wgbs_tools_pat_beta:
+    conda:
+        "envs/env.yaml"
+    input:
+        bam=rules.samtools_fixmate_sort_markdup.output.bam,
+        # index=rules.wgbs_tools_index.output, # Temporarily assume pre-built index.
+    output:
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.beta",
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz",
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz.csi",
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.mbias/{sample}.mbias.OB.txt",
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.mbias/{sample}.mbias.OT.txt"
+    log:
+        "{DATA_PATH}/{experiment}/{sample}/logs/wgbs_tools-bam2pat.log.txt"
+    params:
+        out_dir="{DATA_PATH}/{experiment}/{sample}/wgbs_tools/"
+    threads: 8
+    shell:
+        "wgbstools bam2pat --genome GRCh38-DAC-U2AF1 --out_dir {params.out_dir} --mbias --verbose --threads {threads} {input.bam} >{log} 2>&1"
+
+
+
 ### Run Aggregator
 # Note: This pan-dependency ensures all other jobs are run.
 rule touch_complete_flag:
@@ -757,6 +820,7 @@ rule touch_complete_flag:
         rules.fastqc_bam.output,
         rules.methyldackel_mbias_plots.output,
         rules.goleft_indexcov.output,
+        rules.wgbs_tools_pat_beta.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/.pipeline-complete-v2",
     params:
