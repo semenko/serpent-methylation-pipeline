@@ -1,8 +1,9 @@
-# Snakemake Methylation Pipeline
+# Serpent Methylation Pipeline (for Snakemake)
 
 [![Snakemake](https://img.shields.io/badge/snakemake-≥8.0.0-brightgreen.svg)](https://snakemake.github.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter/badge.svg)](https://github.com/marketplace/actions/super-linter)
 
 
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
