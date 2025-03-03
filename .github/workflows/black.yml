@@ -1,0 +1,15 @@
+name: Black Lint
+on: [push, pull_request]
+
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+      - name: Install Black
+        run: pip install black
+      - name: Run Black Check
+        run: black --check .
