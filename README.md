@@ -1,5 +1,10 @@
 # Snakemake Methylation Pipeline
 
+[![Snakemake](https://img.shields.io/badge/snakemake-≥8.0.0-brightgreen.svg)](https://snakemake.github.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
+
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
 
 At a high level, this pipeline reproducibly:
@@ -19,16 +24,37 @@ At a high level, this pipeline reproducibly:
 
 ## Getting Started
 
-### Installation
-1. Clone this repo: `git clone https://github.com/semenko/serpent-methylation-pipeline.git`
-1. Install mamba: `conda install -c conda-forge mamba` or [mambaforge](https://github.com/conda-forge/miniforge#mambaforge)
-1. Install snakemake: `mamba install -c bioconda -c conda-forge snakemake`
-1. (Optionally) Test install the dependencies: `mamba env create -n test_env -f serpent-methylation-pipeline/workflow/envs/env.yaml`
+This pipeline is designed to be straightforward:
+1. Clone this repository and open the directory:
+   ```
+   git clone https://github.com/semenko/serpent-methylation-pipeline.git
+   cd serpent-methylation-pipeline
+   ```
+2. Install mamba:
+   ```
+   conda install -c conda-forge mamba
+   ```
+   or install [mambaforge](https://github.com/conda-forge/miniforge#mambaforge).
+
+3. Install Snakemake via mamba:
+   ```
+   mamba install -c bioconda -c conda-forge snakemake
+   ```
+4. (Optional) Create a separate conda environment for pipeline dependencies:
+   ```
+   mamba env create -n serpent_pipeline_env -f workflow/envs/env.yaml
+   ```
+   Then activate it with:
+   ```
+   conda activate serpent_pipeline_env
+   ```
 
 ### Test Run
-`
-$ nice snakemake --cores 50 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
-`
+Use:
+```
+nice snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
+```
+to quickly validate the pipeline and see what would be executed. Remove `--dry-run` to run the full process.
 
 After removing the `--dry-run` flag, this will download reference genomes and build indices.
 
