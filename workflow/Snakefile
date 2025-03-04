@@ -26,8 +26,9 @@ from snakemake import __version__
 if int(__version__.split(".")[0]) < 8:
     from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
     remote_provider = HTTPRemoteProvider()
-    # Super hack that turns this into a function you can call as storage.http instead of remote_provider.remote
-    storage = type('storage', (), {'http': remote_provider.remote})
+    # Insane hack that turns this into a function you can call as storage.http instead of remote_provider.remote
+    # This is because Snakemake parses/tries to validate we aren't using "storage" as a global variable...
+    globals()['storage'] = type('storage', (), {'http': remote_provider.remote}) = type('storage', (), {'http': remote_provider.remote})
 
 from snakemake.workflow import Workflow
 
@@ -181,7 +182,7 @@ rule get_reference_genome:
         # Not really ftp -- it's HTTPS/TLS
         reference_genome=ancient(
             storage.http(
-                "ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna.gz",
+                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna.gz",
                 keep_local=True,
             )
         ),
@@ -201,13 +202,13 @@ rule mask_reference_fasta:
     input:
         u1af1_exclusion=ancient(
             storage.http(
-                "ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_GRC_exclusions.bed",
+                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_GRC_exclusions.bed",
                 keep_local=True,
             )
         ),
         dac_exclusion=ancient(
             storage.http(
-                "encode-public.s3.amazonaws.com/2020/05/05/bc5dcc02-eafb-4471-aba0-4ebc7ee8c3e6/ENCFF356LFX.bed.gz",
+                "https://encode-public.s3.amazonaws.com/2020/05/05/bc5dcc02-eafb-4471-aba0-4ebc7ee8c3e6/ENCFF356LFX.bed.gz",
                 keep_local=True,
             )
         ),
