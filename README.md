@@ -3,8 +3,10 @@
 [![Snakemake](https://img.shields.io/badge/snakemake-≥8.0.0-brightgreen.svg)](https://snakemake.github.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter/badge.svg)](https://github.com/marketplace/actions/super-linter)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue.svg)](https://www.linux.org/)
+[![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter.yml/badge.svg)](https://github.comm/marketplace/actions/workflows/super-linter)
 
+<img src="serpent-logo.png" width="500px" alt="Serpent Pipeline Logo" />
 
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
 
@@ -14,14 +16,14 @@ At a high level, this pipeline reproducibly:
 - Aligns & calls methylation using [biscuit](https://github.com/huishenlab/biscuit)
 - Flags non-converted reads
 - Generates standardized outputs & QC including
-    - FastQC
-    - fastp
-    - Biscuit QC
-    - samtools stats
-    - MethylDackel mbias plots
-    - Goleft covplots
-    - epibed/epiread files
-- Runs multiqc across entire projects
+  - [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
+  - [fastp](https://github.com/OpenGene/fastp)
+  - Biscuit QC
+  - [samtools stats](https://github.com/samtools/samtools)
+  - [MethylDackel mbias plots](https://github.com/dpryan79/MethylDackel)
+  - [Goleft covplots](https://github.com/brentp/goleft)
+  - epibed/epiread files
+- Runs [multiqc](https://multiqc.info) across entire projects
 
 ## Getting Started
 
@@ -31,13 +33,7 @@ This pipeline is designed to be straightforward:
    git clone https://github.com/semenko/serpent-methylation-pipeline.git
    cd serpent-methylation-pipeline
    ```
-2. Install mamba:
-   ```
-   conda install -c conda-forge mamba
-   ```
-   or install [mambaforge](https://github.com/conda-forge/miniforge#mambaforge).
-
-3. Install Snakemake via mamba:
+2. Install Snakemake via [mamba](https://github.com/conda-forge/miniforge#mambaforge) (or conda)
    ```
    mamba install -c bioconda -c conda-forge snakemake
    ```
@@ -58,6 +54,10 @@ nice snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete --rerun
 to quickly validate the pipeline and see what would be executed. Remove `--dry-run` to run the full process.
 
 After removing the `--dry-run` flag, this will download reference genomes and build indices.
+
+### Mac OS X Compatibility
+
+Unfortunately, critical dependencies don't support Mac OS architectures yet (e.g., `bwa-mem2` only supports `linux-aarch64`), though this might be supported using `brew`. Please open an issue or submit a PR if you're able to improve this situation! :smiley:
 
 ### Data Definition
 
