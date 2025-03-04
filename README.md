@@ -35,7 +35,7 @@ This pipeline is designed to be straightforward:
    ```
 2. Install Snakemake via [mamba](https://github.com/conda-forge/miniforge#mambaforge) (or conda)
    ```
-   mamba install -c bioconda -c conda-forge snakemake
+   mamba install -c bioconda -c conda-forge snakemake snakemake-storage-plugin-http
    ```
 4. (Optional) Create a separate conda environment for pipeline dependencies:
    ```

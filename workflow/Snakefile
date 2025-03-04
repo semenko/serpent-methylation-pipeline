@@ -20,7 +20,15 @@ import re
 import sys
 
 import pandas as pd
-from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
+
+# Deal with snakemake >8 transition.
+from snakemake import __version__
+if int(__version__.split(".")[0]) < 8:
+    from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
+    remote_provider = HTTPRemoteProvider()
+    # Super hack that turns this into a function you can call as storage.http instead of remote_provider.remote
+    storage = type('storage', (), {'http': remote_provider.remote})
+
 from snakemake.workflow import Workflow
 
 # Get full path based on Snakemake location
@@ -168,14 +176,11 @@ rule all:
 # This is: GRCh38, with decoys and hs38d1, but no ALT and no patch. For a better understanding, read:
 # https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/README_analysis_sets.txt
 
-HTTPS = HTTPRemoteProvider()
-
-
 rule get_reference_genome:
     input:
         # Not really ftp -- it's HTTPS/TLS
         reference_genome=ancient(
-            HTTPS.remote(
+            storage.http(
                 "ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna.gz",
                 keep_local=True,
             )
@@ -195,13 +200,13 @@ rule mask_reference_fasta:
         "envs/env.yaml"
     input:
         u1af1_exclusion=ancient(
-            HTTPS.remote(
+            storage.http(
                 "ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_GRC_exclusions.bed",
                 keep_local=True,
             )
         ),
         dac_exclusion=ancient(
-            HTTPS.remote(
+            storage.http(
                 "encode-public.s3.amazonaws.com/2020/05/05/bc5dcc02-eafb-4471-aba0-4ebc7ee8c3e6/ENCFF356LFX.bed.gz",
                 keep_local=True,
             )
