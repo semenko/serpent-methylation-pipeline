@@ -28,7 +28,7 @@ if int(__version__.split(".")[0]) < 8:
     remote_provider = HTTPRemoteProvider()
     # Insane hack that turns this into a function you can call as storage.http instead of remote_provider.remote
     # This is because Snakemake parses/tries to validate we aren't using "storage" as a global variable...
-    globals()['storage'] = type('storage', (), {'http': remote_provider.remote}) = type('storage', (), {'http': remote_provider.remote})
+    globals()['storage'] = type('storage', (), {'http': remote_provider.remote})
 
 from snakemake.workflow import Workflow
 
