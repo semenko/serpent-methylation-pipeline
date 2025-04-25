@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue.svg)](https://www.linux.org/)
-[![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter.yml/badge.svg)](https://github.comm/marketplace/actions/workflows/super-linter)
+[![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter.yml/badge.svg)](https://github.com/marketplace/actions/super-linter)
 
 <img src="serpent-logo.png" width="500px" alt="Serpent Pipeline Logo" />
 
