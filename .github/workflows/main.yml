@@ -33,4 +33,3 @@ jobs:
         directory: .test
         snakefile: workflow/Snakefile
         args: "--lint"
-
