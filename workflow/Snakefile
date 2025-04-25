@@ -1,12 +1,12 @@
-## This is the Liquid Cell Atlas pipeline from raw reads to methylation data, including extensive QC
+## This is the Serpent methylation pipeline from raw reads to methylation data, including extensive QC
 #
 # Author: Nick Semenkovich <semenko@alum.mit.edu> https://nick.semenkovich.com
 # License: MIT
+#
 # Source: https://github.com/semenko/serpent-methylation-pipeline
 #
 # Note: There are modular ways to approach things with snakefiles — here, I explicitly prioritized
-# simplicity and having one large file that runs the same analyses on all inputs. For example, there's
-# no modular .yaml config.
+# simplicity and having one large file that runs the same analyses on all inputs.
 #
 # If you're looking for different approaches, you can explore:
 # Snakepipes WGBS pipeline: https://snakepipes.readthedocs.io/en/latest/content/workflows/WGBS.html
