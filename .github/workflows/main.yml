@@ -31,5 +31,6 @@ jobs:
       uses: snakemake/snakemake-github-action@v2.0.1
       with:
         directory: .test
+        stagein: 'pip install -r requirements.txt'
         snakefile: workflow/Snakefile
         args: "--lint"
