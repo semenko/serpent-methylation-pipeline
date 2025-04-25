@@ -782,8 +782,8 @@ rule wgbs_tools_pat_beta:
     conda:
         "envs/env.yaml"
     input:
-        bam=rules.samtools_fixmate_sort_markdup.output.bam,
         # index=rules.wgbs_tools_index.output, # Temporarily assume pre-built index.
+        bam=rules.samtools_fixmate_sort_markdup.output.bam,
     output:
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.beta",
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz",
