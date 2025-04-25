@@ -302,24 +302,11 @@ rule bwa_meth_index:
 
 
 ### wgbs_tools
-# Build wgbs_tools, requires libboost
-# Bit of a hackjob to build this here...
-rule wgbs_build:
-    conda: "envs/env.yaml"
-    input:
-        # git_submodule_init = ancient(rules.git_submodule_init.output)
-    output:
-        "wgbs_tools/src/python/wgbs_tools.py"
-    log:
-        "wgbs_tools/snakemake_build.log.txt"
-    shell:
-        "cd wgbs_tools && python setup.py >{log} 2>&1"
-
 # wgbs_tools index
+# Note we assume you pre-built wgbs_tools
 rule wgbs_tools_index:
     conda: "envs/env.yaml"
     input:
-        wgbs_build = rules.wgbs_build.output,
         reference = rules.mask_reference_fasta.output.masked_reference_genome
     output:
         "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/chrome.size",
