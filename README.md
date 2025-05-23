@@ -9,7 +9,7 @@
 
 <img src="serpent-logo.png" width="500px" alt="Serpent Pipeline Logo" />
 
-A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
+A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [bwameth](https://github.com/brentp/bwa-meth) with [bwa-mem2](https://github.com/bwa-mem/bwa-mem2) and [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
 
 ## 📖 Documentation
 
@@ -50,18 +50,20 @@ For detailed instructions, see the [Installation Guide](https://semenko.github.i
 ## Features
 
 At a high level, this pipeline reproducibly:
-- Builds a reference genome
-- Trims & (minimally) filters reads
-- Aligns & calls methylation using [biscuit](https://github.com/huishenlab/biscuit)
-- Flags non-converted reads
-- Generates standardized outputs & QC including
+- Builds a reference genome (GRCh38 with hs38d1 decoy, U2AF1 and ENCODE DAC masking)
+- Trims & filters reads using [fastp](https://github.com/OpenGene/fastp)
+- Aligns using [bwameth](https://github.com/brentp/bwa-meth) with [bwa-mem2](https://github.com/bwa-mem/bwa-mem2) backend
+- Marks non-converted reads using [mark-nonconverted-reads](https://github.com/nebiolabs/mark-nonconverted-reads)
+- Calls methylation using [biscuit](https://github.com/huishenlab/biscuit) pileup
+- Generates standardized outputs & QC including:
   - [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
-  - [fastp](https://github.com/OpenGene/fastp)
-  - Biscuit QC
+  - [fastp](https://github.com/OpenGene/fastp) statistics
+  - [Biscuit QC](https://huishenlab.github.io/biscuit/)
   - [samtools stats](https://github.com/samtools/samtools)
   - [MethylDackel mbias plots](https://github.com/dpryan79/MethylDackel)
-  - [Goleft covplots](https://github.com/brentp/goleft)
-  - epibed/epiread files
+  - [Goleft indexcov plots](https://github.com/brentp/goleft)
+  - [wgbs_tools](https://github.com/nloyfer/wgbs_tools) pat/beta files
+  - Compressed bed files and epibeds
 - Runs [multiqc](https://multiqc.info) across entire projects
 
 ## Support

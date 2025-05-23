@@ -31,7 +31,7 @@ Create CSV files in ``data/`` directory (e.g., ``data/experiment1.csv``, ``data/
      - Path to R2 FASTQ file (relative to sample directory)
    * - ``method``
      - string
-     - Sequencing method: "emseq" or "bs-seq"
+     - Sequencing method: "emseq" or "bs-seq" (case-sensitive)
    * - ``md5sum_R1``
      - string
      - MD5 checksum for R1 file validation
@@ -39,7 +39,7 @@ Create CSV files in ``data/`` directory (e.g., ``data/experiment1.csv``, ``data/
      - string
      - MD5 checksum for R2 file validation
 
-**Optional Columns:**
+**Optional Columns (from test.csv):**
 
 .. list-table::
    :header-rows: 1
@@ -50,24 +50,39 @@ Create CSV files in ``data/`` directory (e.g., ``data/experiment1.csv``, ``data/
    * - ``source``
      - Sample source (e.g., "plasma", "tissue")
    * - ``cell_type``
-     - Cell type description
+     - Cell type description (e.g., "cfdna", "bulk")
    * - ``description``
      - Additional sample description
+   * - ``internal_path``
+     - Internal tracking path
    * - ``batch``
      - Sequencing batch information
+   * - ``batch_id``
+     - Batch identifier
+   * - ``sequencing_facility``
+     - Facility where sequencing was performed
    * - ``target_depth``
      - Expected sequencing depth
+   * - ``indexing_pcr_cycles``
+     - Number of indexing PCR cycles
+   * - ``ng_dna_for_prep``
+     - DNA input amount for library prep
+   * - ``ng_unmethylated_lambda``
+     - Lambda DNA spike-in amount
+   * - ``sorted_cells``
+     - Number of sorted cells (if applicable)
+   * - ``ng_sorted_dna``
+     - DNA amount from sorted cells
 
 Example Configuration
 ---------------------
 
-**data/experiment1.csv:**
+**data/test.csv (actual format):**
 
 .. code-block:: csv
 
-   sample_id,source,cell_type,method,description,path_R1,path_R2,md5sum_R1,md5sum_R2
-   Sample_001,plasma,cfdna,emseq,Test sample,sample1_R1.fastq.gz,sample1_R2.fastq.gz,abc123...,def456...
-   Sample_002,tissue,bulk,bs-seq,Control sample,sample2_R1.fastq.gz,sample2_R2.fastq.gz,ghi789...,jkl012...
+   sample_id,source,cell_type,method,description,path_R1,path_R2,md5sum_R1,md5sum_R2,internal_path,batch,batch_id,sequencing_facility,target_depth,indexing_pcr_cycles,ng_dna_for_prep,ng_unmethylated_lambda,sorted_cells,ng_sorted_dna
+   Test_SAMPLE1,plasma,cfdna,emseq,,1.fastq.gz,2.fastq.gz,62f0886509be1186c9b71f9f24e7ea27,a1cb70a3f16fe94e942c8d8f2fbeb8fd,,,,medgenome,,,,,,
 
 Directory Structure
 -------------------
@@ -108,8 +123,20 @@ Key parameters can be modified in ``workflow/Snakefile``:
 
 The pipeline automatically adjusts trimming based on the ``method`` column:
 
-- **EM-seq**: 10bp trimmed from all ends
-- **BS-seq**: 15bp trimmed from R2 5' end, 10bp from other ends
+- **emseq**: 10bp trimmed from all ends
+- **bs-seq**: 15bp trimmed from R2 5' end, 10bp from other ends
+
+**Pipeline Modes**
+
+Configure pipeline behavior with config flags:
+
+.. code-block:: bash
+
+   # Generate subsampled data only
+   snakemake --config make-subsampled=True
+   
+   # Analyze existing subsampled data
+   snakemake --config analyze-subsampled=True
 
 Reference Genome Configuration
 ------------------------------
@@ -117,9 +144,11 @@ Reference Genome Configuration
 The pipeline uses GRCh38 with specific modifications:
 
 - **Base**: GRCh38 (no patches)
-- **Includes**: hs38d1 decoy sequences
+- **Includes**: hs38d1 decoy sequences  
 - **Masking**: U2AF1 and ENCODE DAC exclusion regions
 - **Format**: No ALT chromosomes in main analysis
+
+The reference is automatically downloaded and processed on first run.
 
 Environment Configuration
 -------------------------
@@ -128,11 +157,14 @@ Environment Configuration
 
 Key dependencies are automatically managed:
 
-- biscuit (≥1.2.1)
 - bwameth (≥0.2.7)
+- bwa-mem2 (≥2.2.1)
+- biscuit (≥1.2.1)
 - samtools (≥1.17)
 - fastp (≥0.23.2)
 - multiqc (≥1.14)
+- mark-nonconverted-reads (≥1.2)
+- wgbs_tools (external dependency)
 
 Advanced Configuration
 ----------------------
@@ -147,17 +179,34 @@ Modify resource requirements in individual rules:
    resources:
       mem_mb = 128000  # 128GB RAM
 
-**Custom Parameters**
+**Trimming Parameters**
 
-Key parameters can be customized:
+Customize trimming in the fastp rule:
 
 .. code-block:: python
 
-   # fastp trimming (in fastp rule)
+   # fastp trimming parameters
    minimum_length = 15
-   
+   trim_r1_5prime = "10"
+   trim_r1_3prime = "10"
+
+**Methylation Calling Parameters**
+
+Adjust biscuit parameters:
+
+.. code-block:: python
+
    # biscuit bed generation (in biscuit_bed rule)  
-   minimum_reads = 3
+   minimum_reads = 3  # Minimum coverage per CpG site
+
+**Non-conversion Detection**
+
+Configure mark-nonconverted-reads:
+
+.. code-block:: python
+
+   # mark_nonconverted rule
+   threshold = 3  # Minimum non-converted Cs to flag read
 
 Validation
 ----------
@@ -175,9 +224,10 @@ Use the provided test dataset:
 
 The pipeline validates:
 
-- Required columns are present
-- MD5 checksums match input files
+- Required columns are present in CSV files
+- MD5 checksums match input files  
 - File paths are accessible
+- Method specification is valid ("emseq" or "bs-seq")
 
 Troubleshooting Configuration
 -----------------------------
@@ -187,6 +237,13 @@ Troubleshooting Configuration
 1. **Missing files**: Ensure FASTQ paths are correct relative to sample directories
 2. **MD5 mismatches**: Verify file integrity and checksums
 3. **Method specification**: Use exactly "emseq" or "bs-seq" (case-sensitive)
+4. **CSV format**: Ensure proper comma separation and no extra whitespace
+
+**Subsampled Data Notes:**
+
+- Subsampled runs override path_R1/path_R2 with "R1.fastq.gz"/"R2.fastq.gz"
+- MD5 validation is skipped for subsampled data
+- Original data structure is preserved with "_subsampled" suffix
 
 Next Steps
 ----------

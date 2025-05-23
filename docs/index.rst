@@ -6,7 +6,7 @@ Serpent Methylation Pipeline Documentation
    :alt: Serpent Pipeline Logo
    :align: center
 
-A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls using Snakemake.
+A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls using bwameth for alignment and biscuit for methylation calling, implemented with Snakemake.
 
 .. toctree::
    :maxdepth: 2
@@ -48,8 +48,10 @@ Features
 
 * **Reproducible**: Uses Snakemake for workflow management
 * **Comprehensive QC**: Includes FastQC, fastp, biscuit QC, and more
-* **Multiple aligners**: Supports both bwameth and biscuit
-* **Standardized output**: Generates bed files, epibeds, and QC reports
+* **Fast alignment**: Uses bwameth with bwa-mem2 backend for rapid bisulfite alignment
+* **Quality methylation calls**: Uses biscuit for accurate methylation calling
+* **Standardized output**: Generates bed files, pat/beta files, epibeds, and QC reports
+* **Non-conversion detection**: Marks and flags non-converted reads
 * **Platform support**: Optimized for Linux systems
 
 Indices and tables
