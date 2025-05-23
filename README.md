@@ -5,10 +5,49 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue.svg)](https://www.linux.org/)
 [![Super-Linter](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/linter.yml/badge.svg)](https://github.com/marketplace/actions/super-linter)
+[![Documentation](https://github.com/semenko/serpent-methylation-pipeline/actions/workflows/docs.yml/badge.svg)](https://semenko.github.io/serpent-methylation-pipeline/)
 
 <img src="serpent-logo.png" width="500px" alt="Serpent Pipeline Logo" />
 
 A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. This goes from .fastq to methylation calls (via [biscuit](https://github.com/huishenlab/biscuit)) and includes extensive QC and plotting, using a Snakemake pipeline.
+
+## 📖 Documentation
+
+**[View the complete documentation](https://semenko.github.io/serpent-methylation-pipeline/)**
+
+The documentation includes:
+- Detailed installation instructions
+- Configuration guide
+- Usage examples
+- Pipeline technical details
+- Troubleshooting guide
+- API reference
+
+## Quick Start
+
+This pipeline is designed to be straightforward:
+1. Clone this repository and open the directory:
+   ```
+   git clone https://github.com/semenko/serpent-methylation-pipeline.git
+   cd serpent-methylation-pipeline
+   ```
+2. Install Snakemake via [mamba](https://github.com/conda-forge/miniforge#mambaforge) (or conda)
+   ```
+   mamba install -c bioconda -c conda-forge snakemake snakemake-storage-plugin-http
+   ```
+3. (Optional) Create a separate conda environment for pipeline dependencies:
+   ```
+   mamba env create -n serpent_pipeline_env -f workflow/envs/env.yaml
+   conda activate serpent_pipeline_env
+   ```
+4. Test the pipeline:
+   ```
+   snakemake --cores 4 --use-conda --dry-run
+   ```
+
+For detailed instructions, see the [Installation Guide](https://semenko.github.io/serpent-methylation-pipeline/installation.html).
+
+## Features
 
 At a high level, this pipeline reproducibly:
 - Builds a reference genome
@@ -25,54 +64,15 @@ At a high level, this pipeline reproducibly:
   - epibed/epiread files
 - Runs [multiqc](https://multiqc.info) across entire projects
 
-## Getting Started
+## Support
 
-This pipeline is designed to be straightforward:
-1. Clone this repository and open the directory:
-   ```
-   git clone https://github.com/semenko/serpent-methylation-pipeline.git
-   cd serpent-methylation-pipeline
-   ```
-2. Install Snakemake via [mamba](https://github.com/conda-forge/miniforge#mambaforge) (or conda)
-   ```
-   mamba install -c bioconda -c conda-forge snakemake snakemake-storage-plugin-http
-   ```
-4. (Optional) Create a separate conda environment for pipeline dependencies:
-   ```
-   mamba env create -n serpent_pipeline_env -f workflow/envs/env.yaml
-   ```
-   Then activate it with:
-   ```
-   conda activate serpent_pipeline_env
-   ```
+- **Documentation**: [https://semenko.github.io/serpent-methylation-pipeline/](https://semenko.github.io/serpent-methylation-pipeline/)
+- **Issues**: [GitHub Issues](https://github.com/semenko/serpent-methylation-pipeline/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/semenko/serpent-methylation-pipeline/discussions)
 
-### Test Run
-Use:
-```
-nice snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete --rerun-triggers mtime --keep-going --dry-run
-```
-to quickly validate the pipeline and see what would be executed. Remove `--dry-run` to run the full process.
+## Contributing
 
-After removing the `--dry-run` flag, this will download reference genomes and build indices.
-
-### Mac OS X Compatibility
-
-Unfortunately, critical dependencies don't support Mac OS architectures yet (e.g., `bwa-mem2` only supports `linux-aarch64`), though this might be supported using `brew`. Please open an issue or submit a PR if you're able to improve this situation! :smiley:
-
-### Data Definition
-
-
-### Expected Output
-
-Raw data files from [data](../data) are processed and analyzed by this snakemake workflow. Within each project directory, the output is (roughly) structured as:
-
-    SAMPLE_01/                  # e.g. melanoma / crc / healthy, etc.
-    │   SAMPLE.bam              # The final alignment file 
-    |   SAMPLE.bam.bai          #   (and its index)
-    |── biscuit_qc/             # biscuit QC.sh text files
-    |── epibeds/                # epibed files (bgzip-compressed & tabix-indexed)
-    ├── fastp/                  # fastp statistics & logs
-    ├── fastqc/                 # fastqc graphs 
+We welcome contributions! Please see the [Contributing Guide](https://semenko.github.io/serpent-methylation-pipeline/contributing.html) in our documentation.
     ├── goleft/                 # goleft coverage plots
     ├── logs/                   # runlogs from each pipeline component
     ├── methyldackel/           # mbias plots
