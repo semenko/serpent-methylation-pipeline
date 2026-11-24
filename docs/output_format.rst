@@ -16,7 +16,7 @@ Directory Structure
    │   │   ├── SAMPLE_01.bam              # Final alignment file
    │   │   ├── SAMPLE_01.bam.bai          # BAM index
    │   │   ├── beds/                      # Methylation calls
-   │   │   ├── epibeds/                   # Read-level methylation
+   │   │   ├── epibeds/                   # Read-level methylation (optional)
    │   │   ├── wgbs_tools/                # Pat/beta format files
    │   │   ├── biscuit/                   # Biscuit QC output
    │   │   ├── fastp/                     # Trimming statistics
@@ -44,7 +44,7 @@ Core Output Files
 
 - ``beds/SAMPLE.bed.gz``: Compressed methylation calls (CpG sites)
 - ``beds/SAMPLE.bed.gz.tbi``: Tabix index for bed file
-- ``epibeds/SAMPLE.epibed.gz``: Read-level methylation patterns
+- ``epibeds/SAMPLE.epibed.gz``: Read-level methylation patterns (only if you request the ``biscuit_epiread`` output; not built by default)
 - ``epibeds/SAMPLE.epibed.gz.tbi``: Tabix index for epibed
 
 File Format Specifications
@@ -52,61 +52,34 @@ File Format Specifications
 
 **Methylation Bed Format**
 
-The main methylation output follows a 6-column bed format:
-
-.. code-block::
-
-   chr1    3000827    3000828    CG:4    1.000    +
-   chr1    3001007    3001008    CG:8    0.875    +
-   chr1    3001018    3001019    CG:5    0.800    -
+``beds/SAMPLE.bed.gz`` is the output of ``biscuit pileup | biscuit vcf2bed -k 3 -t cg | biscuit mergecg``:
+one line per CpG **dinucleotide** (both strands merged), keeping only sites covered by at least 3 reads.
 
 **Columns:**
 
 1. **Chromosome**: Reference sequence name
-2. **Start**: 0-based start position
-3. **End**: 1-based end position (start + 1)
-4. **Name**: ``CG:coverage`` (number of reads covering site)
-5. **Score**: Methylation beta value (0.0-1.0)
-6. **Strand**: ``+`` or ``-``
+2. **Start**: 0-based start of the CpG
+3. **End**: End of the CpG (start + 2)
+4. **Beta**: Methylation fraction (0.0-1.0)
+5. **Coverage**: Number of reads covering the CpG
+
+See the `biscuit methylation extraction docs <https://huishenlab.github.io/biscuit/docs/methylextraction.html>`_
+for the authoritative description.
 
 **Epibed Format**
 
-Read-level methylation patterns from biscuit epiread:
-
-.. code-block::
-
-   chr1    3000827    3000850    read1    23    +    C.C
-   chr1    3001007    3001025    read2    18    -    c.C
-
-**Columns:**
-
-1. **Chromosome**: Reference sequence name
-2. **Start**: Start position of methylation pattern
-3. **End**: End position of methylation pattern  
-4. **Read ID**: Unique read identifier
-5. **Mapping Quality**: MAPQ score
-6. **Strand**: Read strand
-7. **Pattern**: Methylation pattern (C=methylated, c=unmethylated, .=reference C)
+``epibeds/SAMPLE.epibed.gz`` (optional) is the bgzipped, tabix-indexed output of ``biscuit epiread``: one line per
+read with run-length-encoded methylation states. See the
+`biscuit epiBED docs <https://huishenlab.github.io/biscuit/docs/epiread>`_ for the column definitions.
 
 **wgbs_tools Formats**
 
-**Pat Files** (``wgbs_tools/SAMPLE.pat.gz``):
+- ``wgbs_tools/SAMPLE.pat.gz`` (+ ``.csi``): read-level CpG methylation patterns
+  (chromosome, CpG index, pattern, count)
+- ``wgbs_tools/SAMPLE.beta``: a binary array of (methylated, total) read counts per CpG; not a text file
+- ``wgbs_tools/SAMPLE.mbias/``: per-strand M-bias tables
 
-Compressed, indexed methylation patterns:
-
-.. code-block::
-
-   chr1    3000827    C.C.CC    5
-   chr1    3001007    c.C       3
-
-**Beta Files** (``wgbs_tools/SAMPLE.beta``):
-
-Beta values for genomic regions:
-
-.. code-block::
-
-   chr1:3000827    0.800    5
-   chr1:3001007    0.667    3
+See the `wgbs_tools file format docs <https://github.com/nloyfer/wgbs_tools/blob/master/docs/pat_format.md>`_.
 
 Quality Control Outputs
 -----------------------
@@ -189,7 +162,7 @@ Comprehensive project summary including:
 
 **Reference Files** (``reference/``):
 
-Generated once per pipeline run:
+Generated once, in ``data/reference/``, and shared by all experiments:
 
 - ``GRCh38-DAC-U2AF1.fna``: Masked reference genome
 - ``GRCh38-DAC-U2AF1.fna.bis.*``: biscuit indices
@@ -262,4 +235,4 @@ Quality Metrics Interpretation
 Next Steps
 ----------
 
-See :doc:`troubleshooting` for guidance on interpreting QC metrics and addressing common issues.
+See :doc:`pipeline_details` for how each of these outputs is generated.

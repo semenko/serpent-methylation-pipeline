@@ -9,12 +9,12 @@ Pipeline Overview
 The pipeline processes WGBS bisulfite and EM-seq data through several key stages:
 
 1. **Reference Preparation**: Downloads and masks GRCh38 reference
-2. **Quality Control & Trimming**: Uses fastp for adapter trimming and quality filtering
+2. **Quality Control & Trimming**: Uses fastp for adapter trimming, end trimming and its default quality filtering
 3. **Alignment**: Uses bwameth with bwa-mem2 for bisulfite-aware alignment
 4. **Post-processing**: Marks duplicates and non-converted reads
 5. **Methylation Calling**: Uses biscuit for methylation extraction
 6. **Quality Assessment**: Comprehensive QC across multiple tools
-7. **Output Generation**: Creates standardized bed, pat/beta, and epibed formats
+7. **Output Generation**: Creates standardized bed and pat/beta formats (epibed export is optional)
 
 Reference Genome Details
 ------------------------
@@ -26,14 +26,14 @@ Reference Genome Details
 - **Exclusions**: 
   - U2AF1 masking regions
   - ENCODE DAC exclusion list
-- **Format**: No ALT chromosomes in main analysis
+- **Excludes**: ALT contigs (this is the ``no_alt_plus_hs38d1`` analysis set)
 
 The reference is downloaded from NCBI and processed to apply masking files:
 
 .. code-block:: bash
 
    # U2AF1 masking
-   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_GRC_exclusions.bed
+   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_GRC_exclusions.bed
    
    # ENCODE DAC exclusion
    https://encode-public.s3.amazonaws.com/2020/05/05/bc5dcc02-eafb-4471-aba0-4ebc7ee8c3e6/ENCFF356LFX.bed.gz
@@ -45,20 +45,20 @@ Alignment Strategy
 
 The pipeline uses `bwameth <https://github.com/brentp/bwa-meth>`_ with the `bwa-mem2 <https://github.com/bwa-mem/bwa-mem2>`_ backend:
 
-- **Speed**: bwa-mem2 provides 2-3x speedup over standard bwa
+- **Speed**: bwa-mem2 is substantially faster than standard bwa mem
 - **Accuracy**: Maintains bwameth's bisulfite-aware alignment
-- **Memory**: Optimized memory usage for large genomes
-- **Threading**: Scales well with available CPU cores
+- **Threading**: Uses every core the rest of the piped ``align_core`` job group does not need (all cores minus 8 on a large machine)
 
 **Alignment Parameters:**
 
 - Uses interleaved FASTQ input from fastp
 - Applies read group information for sample tracking
-- Outputs uncompressed SAM for downstream processing
+- Streams uncompressed SAM through named pipes to non-conversion marking, fixmate, sort and markdup
+  (fastp → bwameth → mark-nonconverted → samtools run as one job group; no intermediate files hit disk)
 
 **Alternative: biscuit (currently disabled)**
 
-The pipeline includes biscuit alignment support but it's currently disabled due to performance:
+A biscuit alignment rule is kept (commented out) in the Snakefile; it is disabled due to performance:
 
 - **Accuracy**: Excellent for SNV calling
 - **Speed**: ~30 hours per sample on 40-core machine
@@ -81,12 +81,14 @@ Trimming Strategy
 
 - **EM-seq**: Conservative 10bp trimming based on NEB recommendations
 - **BS-seq**: Additional 5bp R2 5' trimming due to adaptase bias
-- **Poly-G**: Removes poly-G sequences from two-color chemistry
-- **Length**: Minimum 15bp read length requirement
+- **Adapters**: TruSeq adapter sequences are given explicitly (no auto-detection)
+- **Poly-G**: Not forced; fastp trims poly-G tails automatically when it detects two-color (NextSeq/NovaSeq) data
+- **Length**: Reads shorter than 15bp after trimming are discarded (written to ``fastp/failed.fa.gz``)
 
 **Quality Filtering:**
 
-Quality filtering is intentionally **disabled** (``--disable_quality_filtering``) to preserve data for downstream analysis-specific filtering.
+fastp runs with its **default** quality filter (reads with >40% of bases below Q15, or more than 5 Ns, are
+discarded into ``fastp/failed.fa.gz``). No stricter filtering is applied; filter on MAPQ/base quality downstream as needed.
 
 Post-Alignment Processing
 -------------------------
@@ -96,7 +98,7 @@ Post-Alignment Processing
 Uses `mark-nonconverted-reads <https://github.com/nebiolabs/mark-nonconverted-reads>`_:
 
 - **Threshold**: 3+ non-converted cytosines per read
-- **Marking**: Sets XX:Z:UC tag and vendor failed bit
+- **Marking**: Sets the XX:Z:UC tag and the QC-fail flag (0x200)
 - **Purpose**: Identifies incomplete bisulfite conversion
 
 **Duplicate Marking:**
@@ -126,8 +128,9 @@ Methylation Calling
 **Output Formats:**
 
 1. **Bed files**: Standard methylation calls
-2. **Epibeds**: Read-level methylation patterns
-3. **Pat/Beta**: wgbs_tools format for downstream analysis
+2. **Pat/Beta**: wgbs_tools format for downstream analysis
+3. **Epibeds**: Read-level methylation patterns (the ``biscuit_epiread`` rule exists but is not part of the
+   default run; request ``epibeds/SAMPLE.epibed.gz`` explicitly, or re-enable it in ``touch_complete_flag``)
 
 Quality Control Components
 --------------------------
@@ -153,7 +156,7 @@ Performance Considerations
 **Resource Requirements:**
 
 - **Memory**: 64-128GB recommended for alignment
-- **CPU**: Scales linearly with core count
+- **CPU**: Alignment scales with core count
 - **Storage**: ~100GB per sample for intermediate files
 - **Network**: Initial download of reference genomes
 
@@ -184,7 +187,7 @@ Output File Organization
    │   ├── SAMPLE.bam              # Final alignment
    │   ├── SAMPLE.bam.bai          # BAM index
    │   ├── beds/                   # Methylation bed files
-   │   ├── epibeds/                # Read-level methylation
+   │   ├── epibeds/                # Read-level methylation (optional)
    │   ├── wgbs_tools/             # Pat/beta format files
    │   ├── biscuit/                # Biscuit QC files
    │   ├── fastp/                  # Trimming statistics
@@ -218,6 +221,6 @@ Software Dependencies
 - **mark-nonconverted-reads** (≥1.2): Non-conversion detection
 - **seqtk** (≥1.3): Read subsampling
 - **bedtools**: Genome interval operations
-- **wgbs_tools**: Pat/beta format generation
+- **wgbs_tools**: Pat/beta format generation (manual install; not available from conda)
 
-All dependencies are managed through conda environments for reproducibility.
+All other dependencies are managed through the conda environment in ``workflow/envs/env.yaml``.

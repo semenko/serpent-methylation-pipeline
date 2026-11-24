@@ -16,15 +16,25 @@ Before installing the Serpent Methylation Pipeline, you need:
 
 1. **Conda/Mamba Package Manager**
 
-   We recommend using `mamba <https://github.com/conda-forge/miniforge#mambaforge>`_ for faster dependency resolution:
+   We recommend using `mamba <https://github.com/conda-forge/miniforge>`_ for faster dependency resolution:
 
    .. code-block:: bash
 
-      # Install mambaforge
-      curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Mambaforge-$(uname)-$(uname -m).sh"
-      bash Mambaforge-$(uname)-$(uname -m).sh
+      # Install Miniforge (includes mamba)
+      curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+      bash Miniforge3-$(uname)-$(uname -m).sh
 
 2. **Git** (for cloning the repository)
+
+3. **wgbs_tools** (manual install)
+
+   `wgbs_tools <https://github.com/nloyfer/wgbs_tools>`_ is not available from conda, so it is not part of
+   ``workflow/envs/env.yaml``. The ``wgbs_tools_pat_beta`` rule expects:
+
+   * ``wgbstools`` on your ``PATH``
+   * a genome named ``GRCh38-DAC-U2AF1`` already initialized against the masked reference, e.g.
+     ``wgbstools init_genome GRCh38-DAC-U2AF1 --fasta_path data/reference/GRCh38-DAC-U2AF1.fna``
+     (the masked reference is built by the pipeline's ``mask_reference_fasta`` rule)
 
 Installation Steps
 ------------------
@@ -42,7 +52,10 @@ Installation Steps
 
       mamba install -c bioconda -c conda-forge snakemake snakemake-storage-plugin-http
 
-3. **Create Pipeline Environment (Optional but Recommended)**
+3. **Create Pipeline Environment (Optional)**
+
+   With ``--use-conda``, Snakemake builds the environment in ``workflow/envs/env.yaml`` for you.
+   To create it by hand instead (and run without ``--use-conda``):
 
    .. code-block:: bash
 
@@ -57,7 +70,8 @@ Installation Steps
 
       snakemake --cores 4 --use-conda --dry-run
 
-   This should show the pipeline execution plan without errors.
+   This should show the pipeline execution plan (21 jobs for the bundled test sample) without errors.
+   The dry run needs network access: Snakemake checks that the reference download URLs exist.
 
 Docker/Singularity Support
 --------------------------
