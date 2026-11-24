@@ -1,64 +1,36 @@
-# Configuration file for the Sphinx documentation builder.
-# For the full list of built-in configuration values, see:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
+# Sphinx configuration: https://www.sphinx-doc.org/en/master/usage/configuration.html
+import subprocess
 
-# -- Project information -----------------------------------------------------
-project = 'Serpent Methylation Pipeline'
-copyright = '2023-2026, Nick Semenkovich'
-author = 'Nick Semenkovich'
-release = '1.0.0'
+project = "Serpent Methylation Pipeline"
+author = "Nick Semenkovich"
+copyright = "2023-2026, Nick Semenkovich"
 
-# -- General configuration ---------------------------------------------------
-extensions = [
-    'sphinx.ext.intersphinx',
-    'sphinx.ext.githubpages',
-    'myst_parser',
-]
 
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+def git_version():
+    """The latest release tag (e.g. 1.0.0), so the version here cannot drift from the releases."""
+    try:
+        tag = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        return tag.lstrip("v")
+    except (OSError, subprocess.CalledProcessError):
+        return ""  # No git, or a shallow clone without tags
 
-# List of patterns, relative to source directory, that match files and
-# directories to ignore when looking for source files.
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
-# -- Options for HTML output -------------------------------------------------
-html_theme = 'sphinx_rtd_theme'
-html_static_path = []
+release = version = git_version()
 
-# Theme options
+# Pages are written in Markdown (MyST)
+extensions = ["myst_parser", "sphinx.ext.githubpages"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+html_theme = "furo"
+html_title = project
+html_logo = "../serpent-logo.png"
 html_theme_options = {
-    'logo_only': False,
-    'prev_next_buttons_location': 'bottom',
-    'style_external_links': False,
-    'vcs_pageview_mode': '',
-    'style_nav_header_background': '#2980B9',
-    'collapse_navigation': True,
-    'sticky_navigation': True,
-    'navigation_depth': 4,
-    'includehidden': True,
-    'titles_only': False
+    "source_repository": "https://github.com/semenko/serpent-methylation-pipeline/",
+    "source_branch": "main",
+    "source_directory": "docs/",
 }
-
-# Add logo
-html_logo = '../serpent-logo.png'
-
-# Intersphinx mapping
-intersphinx_mapping = {
-    'python': ('https://docs.python.org/3/', None),
-    'snakemake': ('https://snakemake.readthedocs.io/en/stable/', None),
-}
-
-# MyST configuration
-myst_enable_extensions = [
-    "amsmath",
-    "colon_fence",
-    "deflist",
-    "dollarmath",
-    "html_admonition",
-    "html_image",
-    "replacements",
-    "smartquotes",
-    "substitution",
-    "tasklist",
-]
