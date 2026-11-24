@@ -17,7 +17,7 @@ A Snakemake pipeline that takes paired-end WGBS / EM-seq `.fastq.gz` files to me
 | `data/EXPERIMENT/SAMPLE/raw/` | Input reads. Everything else under `data/` is pipeline output. |
 | `config/` | Placeholder. `config.yaml` is not read by anything. |
 | `docs/` | Sphinx docs (reStructuredText), deployed to GitHub Pages by `.github/workflows/docs.yml`. |
-| `.github/workflows/main.yml` | CI: snakefmt via super-linter, `snakemake --lint`, and a dry run. |
+| `.github/workflows/main.yml` | CI: snakefmt via super-linter, `snakemake --lint` (advisory), and dry runs on Snakemake 8 and the latest release. |
 | `.github/linters/.snakefmt.toml` | snakefmt settings (strings are not normalized). |
 
 ## Checks
@@ -27,10 +27,11 @@ There is no way to run the pipeline for real in a development environment, so th
 ```bash
 pip install snakemake snakemake-storage-plugin-http pandas snakefmt
 
-# 1. The DAG must build in all three modes
+# 1. The DAG must build in every mode
 snakemake --cores 4 --dry-run                                    # expect 21 jobs
 snakemake --cores 4 --dry-run --config make-subsampled=True      # expect 3 jobs
 snakemake --cores 4 --dry-run --config analyze-subsampled=True   # expect 22 jobs
+snakemake --cores 4 --dry-run --config bam2tensor=True           # expect 22 jobs
 
 # 2. Lint. Pre-existing warnings are fine; do not add new ones.
 snakemake --lint
@@ -68,8 +69,10 @@ sphinx-build -W --keep-going -b html docs docs/_build/html   # must finish with 
 - **The alignment core is one piped job group** (`align_core`): `fastp` → `bwa_meth` → `mark_nonconverted` → `samtools_fixmate_sort_markdup`, connected by `pipe()` outputs. All four run at once and Snakemake sums their threads, so `align_core_threads()` splits the `--cores` budget between them (at least 4 cores are needed). Adding a rule in the middle means adding it to the group and to that budget.
 - **`ancient()` is used on reference and index inputs** so that touching a reference file does not trigger re-alignment of everything.
 - **Not every rule is wired in.** `biscuit_epiread` and `wgbs_tools_index` exist but nothing depends on them, and a biscuit alignment rule is commented out. `touch_complete_flag` lists what a finished sample requires.
-- **`wgbstools` is not in `env.yaml`** (it is not on conda). `wgbs_tools_pat_beta` assumes it is on `PATH` with a `GRCh38-DAC-U2AF1` genome initialized.
-- **Linux-only at run time.** `md5sum`, `bwa-mem2` and others are unavailable on macOS, though dry runs work anywhere.
+- **`wgbstools` and `bam2tensor` are not in `env.yaml`** (neither is on conda). `wgbs_tools_pat_beta` assumes `wgbstools` is on `PATH` with a `GRCh38-DAC-U2AF1` genome initialized. `bam2tensor` assumes `pip install bam2tensor` was done.
+- **`bam2tensor` is optional and outside the completion flag.** It is only a target of `rule all` with `--config bam2tensor=True`, so that turning it on never redoes a finished sample. Do not add it to `touch_complete_flag`.
+- **Changing a rule can rerun it for existing users.** Snakemake reruns jobs whose code, params or input list changed, unless it is run with `--rerun-triggers mtime` (which the docs recommend). Keep edits to expensive rules to what is needed.
+- **Linux-only at run time.** `bwa-mem2` and others are unavailable on macOS, though dry runs work anywhere. The `md5sum` rule falls back to macOS `md5`.
 - **Config flags are read through `config_flag()`**, which requires a true value. Use it for new flags instead of `"name" in config`.
 - **Notifications** are off unless `--config ntfy_topic=...` is set. They go to ntfy.sh through `NTFY_TOPIC` and must stay best-effort (`|| true`): a failed `curl` must never fail a job.
 

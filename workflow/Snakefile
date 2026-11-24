@@ -19,16 +19,11 @@ import sys
 
 import pandas as pd
 
-# Deal with snakemake >8 transition.
-from snakemake import __version__
+from snakemake.utils import min_version
 
-if int(__version__.split(".")[0]) < 8:
-    from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
-
-    remote_provider = HTTPRemoteProvider()
-    # Insane hack that turns this into a function you can call as storage.http instead of remote_provider.remote
-    # This is because Snakemake parses/tries to validate we aren't using "storage" as a global variable...
-    globals()['storage'] = type('storage', (), {'http': remote_provider.remote})
+# Snakemake 8 replaced remote providers with storage plugins (we use storage.http, from
+# snakemake-storage-plugin-http). CI dry-runs both the oldest 8.x that pip resolves and the latest release.
+min_version("8.0")
 
 # Get full path based on Snakemake location
 DATA_PATH = os.path.join(os.path.dirname(workflow.snakefile), "../data")
@@ -61,6 +56,10 @@ if MAKE_SUBSAMPLED and ANALYZE_SUBSAMPLED:
     raise ValueError(
         "Set only one of make-subsampled / analyze-subsampled: generate the subsampled reads first, then analyze them."
     )
+
+# bam2tensor: also export read-level methylation tensors (.npz) with https://github.com/mcwdsi/bam2tensor
+# Optional and off by default; bam2tensor must be installed by hand (pip install bam2tensor).
+RUN_BAM2TENSOR = config_flag("bam2tensor")
 
 # Optional ntfy.sh topic for push notifications (off by default). Enable with: --config ntfy_topic=my-topic
 NTFY_TOPIC = str(config.get("ntfy_topic", "") or "")
@@ -95,6 +94,14 @@ def align_core_threads(job):
     }[job]
 
 
+# The align_core group needs one core per member. Only warn: reference-only targets still work with fewer.
+if workflow.cores is not None and workflow.cores < 4:
+    print(
+        f"Warning: --cores {workflow.cores} is too few to align; the piped align_core group needs at least 4.",
+        file=sys.stderr,
+    )
+
+
 def normalize_method(method):
     """Normalize the method column: 'EM-seq', 'em_seq', 'emseq' -> 'emseq'; 'BS-seq' -> 'bsseq'."""
     return (
@@ -119,6 +126,24 @@ def raw_fastq(wildcards, read):
     return ancient("{DATA_PATH}/{experiment}/{sample}/raw/" + filename)
 
 
+def experiment_complete_flags(wildcards):
+    """Completion flags of every sample in one experiment (what that experiment's MultiQC waits for)."""
+    return [
+        f"{DATA_PATH}/{sample['experiment']}/{sample['sample_id']}/.pipeline-complete-v2"
+        for sample in ALL_SAMPLES_LIST
+        if sample["experiment"] == wildcards.experiment
+    ]
+
+
+REQUIRED_COLUMNS = [
+    "sample_id",
+    "path_R1",
+    "path_R2",
+    "method",
+    "md5sum_R1",
+    "md5sum_R2",
+]
+
 if not data_config_files:
     raise FileNotFoundError(f"No experiment .csv files found in {DATA_PATH}/")
 
@@ -132,25 +157,26 @@ for filename in data_config_files:
 
     print(f"Parsing experiment: {experiment}", file=sys.stderr)
 
-    # Load the .csv of our sample data
-    experiment_df = pd.read_table(filename, delimiter=",").set_index(
-        "sample_id", drop=False
-    )
+    # Load the .csv of our sample data. Everything is read as text (utf-8-sig drops an Excel byte-order mark),
+    # so numeric-looking sample IDs stay strings and checksums keep their leading zeros.
+    experiment_df = pd.read_csv(filename, dtype=str, encoding="utf-8-sig")
+
+    missing_columns = [c for c in REQUIRED_COLUMNS if c not in experiment_df.columns]
+    if missing_columns:
+        raise ValueError(f"{filename} is missing required column(s): {missing_columns}")
+
+    # Stray whitespace around a value would otherwise end up in file paths and checksums
+    for column in REQUIRED_COLUMNS:
+        experiment_df[column] = experiment_df[column].str.strip().replace("", pd.NA)
+
+    experiment_df = experiment_df.set_index("sample_id", drop=False)
 
     experiment_df["experiment"] = experiment
 
     # If these parameters aren't defined, drop the entry
     original_length = len(experiment_df)
     experiment_df.dropna(
-        subset=[
-            "experiment",
-            "sample_id",
-            "path_R1",
-            "path_R2",
-            "method",
-            "md5sum_R1",
-            "md5sum_R2",
-        ],
+        subset=REQUIRED_COLUMNS,
         inplace=True,
     )
     new_length = len(experiment_df)
@@ -204,17 +230,9 @@ ALL_SAMPLES_LIST = []
 
 ## Select just the columns we want.
 # orient=records returns a list of dicts
-all_experiments_data = all_experiments_df[
-    [
-        "experiment",
-        "sample_id",
-        "path_R1",
-        "path_R2",
-        "method",
-        "md5sum_R1",
-        "md5sum_R2",
-    ]
-].to_dict(orient="records")
+all_experiments_data = all_experiments_df[["experiment"] + REQUIRED_COLUMNS].to_dict(
+    orient="records"
+)
 
 print(f"Parsed {len(all_experiments_data)} total sample files.", file=sys.stderr)
 
@@ -268,6 +286,15 @@ rule all:
                 for experiment in sorted({s["experiment"] for s in ALL_SAMPLES_LIST})
             ]
             if not MAKE_SUBSAMPLED
+            else []
+        ),
+        # Optional: bam2tensor read-level methylation tensors (--config bam2tensor=True)
+        bam2tensor=(
+            [
+                f"{DATA_PATH}/{sample['experiment']}/{sample['sample_id']}/bam2tensor/{sample['sample_id']}.methylation.npz"
+                for sample in ALL_SAMPLES_LIST
+            ]
+            if RUN_BAM2TENSOR and not MAKE_SUBSAMPLED
             else []
         ),
 
@@ -343,7 +370,7 @@ rule mask_reference_fasta:
 
 ### biscuit index
 # Runs once to generate biscuit indices
-# NOTE: Not referenced currently, as we aren't calling SNVs w/ biscuit
+# NOTE: Only biscuit_qc_index depends on this, as we aren't aligning or calling SNVs w/ biscuit
 rule biscuit_index:
     input:
         masked_reference_genome=ancient(
@@ -444,7 +471,7 @@ rule wgbs_tools_index:
 
 
 ### md5
-# Validate checksums
+# Validate checksums (with md5sum, or md5 where that is missing, i.e. macOS)
 # This does NOT run on _subsampled experiments (seqtk_subsample touches their md5 files instead).
 rule md5sum:
     input:
@@ -467,7 +494,19 @@ rule md5sum:
     shell:
         """
         echo -e "{params.r1_checksum}\t{input.r1_file}\n{params.r2_checksum}\t{input.r2_file}" >{output.checksums}
-        md5sum --check {output.checksums} >{output.validated}
+        if command -v md5sum >/dev/null 2>&1; then
+            md5sum --check {output.checksums} >{output.validated}
+        else
+            # macOS has no md5sum (it ships md5 instead), so compare the digests by hand
+            while IFS=$'\t' read -r known file; do
+                actual="$(md5 -q "$file")"
+                if [ "$actual" != "$(echo "$known" | tr 'A-F' 'a-f')" ]; then
+                    echo "$file: FAILED (expected $known, got $actual)" >&2
+                    exit 1
+                fi
+                echo "$file: OK"
+            done <{output.checksums} >{output.validated}
+        fi
         """
 
 
@@ -570,7 +609,9 @@ rule fastp:
 rule bwa_meth:
     input:
         input_fasta="{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
-        reference_genome=rules.mask_reference_fasta.output.masked_reference_genome,
+        reference_genome=ancient(
+            rules.mask_reference_fasta.output.masked_reference_genome
+        ),
         bwa_meth_indices=ancient(rules.bwa_meth_index.output),  # We assume ancient, to not force re-run of bwa mem vs bwa-mem2
     output:
         temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam")),
@@ -628,7 +669,9 @@ rule bwa_meth:
 rule mark_nonconverted:
     input:
         aligned_sam="{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam",
-        reference_genome=rules.mask_reference_fasta.output.masked_reference_genome,
+        reference_genome=ancient(
+            rules.mask_reference_fasta.output.masked_reference_genome
+        ),
     output:
         temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/nonconv-marked.sam")),
     log:
@@ -649,7 +692,7 @@ rule mark_nonconverted:
 ## These were originally defined as named pipes between snakemake blocks,
 ## but I ran into a group bug that I couldn't work around: https://github.com/snakemake/snakemake/issues/1822
 ## So now we're one large block shell command *shrug*.
-# NOTE: This is the final step in the core alignment pipeline: markdup writes a (lightly) compressed .bam file and index.
+# NOTE: This is the final step in the core alignment pipeline: markdup writes a (lightly) compressed .bam file.
 rule samtools_fixmate_sort_markdup:
     input:
         mark_nonconv=rules.mark_nonconverted.output,
@@ -703,7 +746,7 @@ rule samtools_index:
     conda:
         "envs/env.yaml"
     shell:
-        # Note: the markdup makes a .csi index, but more classically like .bai's
+        # A classic .bai (not .csi), since that is what the downstream tools look for
         "samtools index -b {input} >{log} 2>&1"
 
 
@@ -711,8 +754,7 @@ rule samtools_index:
 rule samtools_statistics:
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
-        # Note: we can operate on the .csi index above, but I worry there's a race where
-        # we spawn up idxstats but we only just started writing to a .bai
+        # idxstats reads the index, so wait for it rather than racing samtools_index
         index=rules.samtools_index.output,
     output:
         flagstat="{DATA_PATH}/{experiment}/{sample}/samtools/{sample}.flagstat.txt",
@@ -833,7 +875,7 @@ rule biscuit_qc:
 rule methyldackel_mbias_plots:
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
-        reference=rules.mask_reference_fasta.output.masked_reference_genome,
+        reference=ancient(rules.mask_reference_fasta.output.masked_reference_genome),
         index=rules.samtools_index.output,
     output:
         mbias_txt="{DATA_PATH}/{experiment}/{sample}/methyldackel/mbias.txt",
@@ -893,6 +935,8 @@ rule wgbs_tools_pat_beta:
     input:
         # index=rules.wgbs_tools_index.output, # Temporarily assume pre-built index.
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
+        # bam2pat needs the .bai (and tries to build one itself if it is missing, racing samtools_index)
+        bam_index=rules.samtools_index.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.beta",
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz",
@@ -908,6 +952,40 @@ rule wgbs_tools_pat_beta:
         out_dir="{DATA_PATH}/{experiment}/{sample}/wgbs_tools/",
     shell:
         "wgbstools bam2pat --genome GRCh38-DAC-U2AF1 --out_dir {params.out_dir} --mbias --verbose --threads {threads} {input.bam} >{log} 2>&1"
+
+
+### bam2tensor (optional)
+# Read-level CpG methylation as a sparse matrix (.npz), for machine learning: https://github.com/mcwdsi/bam2tensor
+# Only runs with --config bam2tensor=True, and is not part of the completion flag below.
+# Like wgbstools, bam2tensor is not on conda: we assume it is on PATH (pip install bam2tensor).
+# It skips duplicates and QC-failed reads, so reads flagged by mark_nonconverted are excluded.
+rule bam2tensor:
+    input:
+        bam=rules.samtools_fixmate_sort_markdup.output.bam,
+        index=rules.samtools_index.output,
+        reference=ancient(rules.mask_reference_fasta.output.masked_reference_genome),
+    output:
+        "{DATA_PATH}/{experiment}/{sample}/bam2tensor/{sample}.methylation.npz",
+    log:
+        "{DATA_PATH}/{experiment}/{sample}/logs/bam2tensor.log.txt",
+    conda:
+        "envs/env.yaml"
+    threads: 8  # One process per chromosome; little gain beyond ~8
+    resources:
+        mem_mb=96000,  # bam2tensor's guidance: up to ~1.5 GB per GB of .bam
+    params:
+        # bam2tensor caches the reference's CpG positions as GENOME_NAME.cache.json.gz in the working
+        # directory, so we run it from here to build that once (~10 minutes) and share it.
+        cache_dir="{DATA_PATH}/reference/bam2tensor",
+        genome_name="GRCh38-DAC-U2AF1",
+    shell:
+        # --overwrite: otherwise bam2tensor silently keeps a stale .npz and exits 0
+        """
+        mkdir -p {params.cache_dir}
+        cd {params.cache_dir}
+        bam2tensor --input-path {input.bam} --reference-fasta {input.reference} --genome-name {params.genome_name} \
+            --output-dir "$(dirname {output})" --threads {threads} --overwrite --verbose >{log} 2>&1
+        """
 
 
 ### Run Aggregator
@@ -943,7 +1021,7 @@ rule touch_complete_flag:
 # Across an entire experiment/project, not per-sample or batch
 rule multiqc:
     input:
-        rules.all.input.multiqc,
+        experiment_complete_flags,  # Only this experiment's samples
     output:
         "{DATA_PATH}/{experiment}/multiqc/multiqc_report.html",
     log:

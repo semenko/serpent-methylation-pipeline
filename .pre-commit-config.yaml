@@ -1,5 +1,7 @@
 repos:
-  - repo: https://github.com/psf/black
-    rev: 23.7.0
+  # The same formatter and settings that CI enforces
+  - repo: https://github.com/snakemake/snakefmt
+    rev: v2.1.0
     hooks:
-      - id: black
+      - id: snakefmt
+        args: [--config, .github/linters/.snakefmt.toml]

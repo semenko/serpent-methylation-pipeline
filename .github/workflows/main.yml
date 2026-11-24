@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Formatting
-      uses: super-linter/super-linter@v8.3.1
+      uses: super-linter/super-linter@v9.0.0
       env:
         VALIDATE_ALL_CODEBASE: false
         DEFAULT_BRANCH: main
@@ -30,8 +30,8 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.12'
     - name: Install Snakemake
@@ -43,15 +43,22 @@ jobs:
       run: snakemake --lint
   dry-run:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported major version, and the latest release
+        snakemake: ["snakemake>=8,<9", "snakemake"]
+    name: dry-run (${{ matrix.snakemake }})
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.12'
     - name: Install Snakemake
-      run: pip install snakemake -r requirements.txt
-    - name: Dry run on the bundled test sample (all three modes)
+      run: pip install "${{ matrix.snakemake }}" -r requirements.txt
+    - name: Dry run on the bundled test sample (every mode)
       run: |
         snakemake --cores 4 --dry-run
         snakemake --cores 4 --dry-run --config make-subsampled=True
         snakemake --cores 4 --dry-run --config analyze-subsampled=True
+        snakemake --cores 4 --dry-run --config bam2tensor=True
