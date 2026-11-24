@@ -156,8 +156,9 @@ for filename in data_config_files:
     new_length = len(experiment_df)
 
     if original_length != new_length:
+        dropped = original_length - new_length
         print(
-            f"\tWarning: Ignoring {original_length-new_length} samples from experiment '{experiment}' that are missing required values.",
+            f"\tWarning: Ignoring {dropped} samples from experiment '{experiment}' that are missing required values.",
             file=sys.stderr,
         )
 
