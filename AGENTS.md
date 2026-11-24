@@ -16,7 +16,7 @@ A Snakemake pipeline that takes paired-end WGBS / EM-seq `.fastq.gz` files to me
 | `data/*.csv` | One file per experiment. Each row is a sample. `data/test.csv` is the bundled test. |
 | `data/EXPERIMENT/SAMPLE/raw/` | Input reads. Everything else under `data/` is pipeline output. |
 | `config/` | Only `README.md`, which describes the `--config` flags and sample `.csv` files. There is no config file. |
-| `docs/` | Sphinx docs (reStructuredText), deployed to GitHub Pages by `.github/workflows/docs.yml`. |
+| `docs/` | Sphinx docs (Markdown, via MyST), deployed to GitHub Pages by `.github/workflows/docs.yml`. |
 | `.github/workflows/main.yml` | CI: snakefmt via super-linter, `snakemake --lint` (advisory), and dry runs on Snakemake 8 and the latest release. |
 | `.github/linters/.snakefmt.toml` | snakefmt settings (strings are not normalized). |
 
@@ -56,7 +56,7 @@ sphinx-build -W --keep-going -b html docs docs/_build/html   # must finish with 
 - **Do not change scientific behavior unasked.** Trimming lengths, the non-conversion threshold, minimum coverage, the reference build and masking, aligner flags and tool choices are decisions the author made from QC on real data. If one looks wrong, report it instead of changing it.
 - **Do not touch data.** Never edit, move or delete anything under `data/` except experiment `.csv` files. Final `.bam` files are write-protected on purpose.
 - **Do not rename outputs or bump `.pipeline-complete-v2` casually.** Existing users have completed runs on disk; renaming an output makes Snakemake redo days of compute. Bump the completion flag only when existing outputs really must be regenerated.
-- **Keep docs in step.** A behavior change is not finished until `README.md`, `config/README.md` and the matching page in `docs/` say the same thing as the Snakefile. The Snakefile is the source of truth when they disagree.
+- **Keep docs in step.** A behavior change is not finished until the matching page in `docs/` says the same thing as the Snakefile, along with `README.md` (a short summary that links to the docs) and `config/README.md` where they mention it. The Snakefile is the source of truth when they disagree.
 - **Verify URLs before adding them.** Reference downloads have broken before when NCBI moved files.
 - Do not commit or push unless asked.
 

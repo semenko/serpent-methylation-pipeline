@@ -21,6 +21,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v7
+      with:
+        fetch-depth: 0  # docs/conf.py reads the version from the latest tag
 
     - name: Setup Python
       uses: actions/setup-python@v7
