@@ -1,238 +1,147 @@
 Output Format Reference
 =======================
 
-The Serpent Methylation Pipeline generates comprehensive outputs organized by experiment and sample. This document describes all output files and their formats.
+Everything is written under ``data/``, by experiment and then by sample.
 
 Directory Structure
 -------------------
 
-**Standard Analysis:**
-
 .. code-block::
 
    data/
+   ├── reference/                         # Masked GRCh38 and indices (built once, shared)
+   ├── EXPERIMENT.csv                     # Your sample definitions
    ├── EXPERIMENT/
    │   ├── SAMPLE_01/
-   │   │   ├── SAMPLE_01.bam              # Final alignment file
+   │   │   ├── SAMPLE_01.bam              # Sorted, duplicate-marked alignment (write-protected)
    │   │   ├── SAMPLE_01.bam.bai          # BAM index
-   │   │   ├── beds/                      # Methylation calls
+   │   │   ├── bam2tensor/                # Read-level methylation tensors (optional)
+   │   │   ├── beds/                      # CpG methylation calls
+   │   │   ├── biscuit/                   # biscuit QC
    │   │   ├── epibeds/                   # Read-level methylation (optional)
-   │   │   ├── wgbs_tools/                # Pat/beta format files
-   │   │   ├── biscuit/                   # Biscuit QC output
    │   │   ├── fastp/                     # Trimming statistics
-   │   │   ├── fastqc/                    # Quality control
-   │   │   ├── goleft/                    # Coverage analysis
+   │   │   ├── fastqc/                    # FastQC report
+   │   │   ├── goleft/                    # Coverage plots
+   │   │   ├── logs/                      # Logs and benchmarks from each step
    │   │   ├── methyldackel/              # M-bias plots
+   │   │   ├── raw/                       # Your raw reads, plus md5 checksums and validation
    │   │   ├── samtools/                  # Alignment statistics
-   │   │   ├── raw/                       # Input FASTQ files
-   │   │   └── logs/                      # Process logs
+   │   │   ├── wgbs_tools/                # pat/beta files
+   │   │   └── .pipeline-complete-v2      # Marks the sample as finished
    │   ├── SAMPLE_02/
    │   │   └── ...
-   │   └── multiqc/                       # Project-wide QC
-   └── EXPERIMENT_subsampled/             # Subsampled analysis
+   │   └── multiqc/                       # Experiment-level MultiQC report
+   └── EXPERIMENT_subsampled/             # Same layout, for subsampled runs
        └── ...
 
-Core Output Files
+Alignment
+---------
+
+- ``SAMPLE.bam``: coordinate-sorted, with duplicates marked (not removed). Reads that look non-converted carry
+  the ``XX:Z:UC`` tag and the QC-fail flag (0x200).
+- ``SAMPLE.bam.bai``: its index
+
+Methylation Calls
 -----------------
 
-**Primary Alignment:**
+**Bed** (``beds/SAMPLE.bed.gz`` and ``.tbi``)
 
-- ``SAMPLE.bam``: Final coordinate-sorted BAM file with duplicates marked
-- ``SAMPLE.bam.bai``: BAM index for rapid access
+The output of ``biscuit pileup | biscuit vcf2bed -k 3 -t cg | biscuit mergecg``: one line per CpG
+**dinucleotide** (both strands merged), for CpGs covered by at least 3 reads.
 
-**Methylation Data:**
-
-- ``beds/SAMPLE.bed.gz``: Compressed methylation calls (CpG sites)
-- ``beds/SAMPLE.bed.gz.tbi``: Tabix index for bed file
-- ``epibeds/SAMPLE.epibed.gz``: Read-level methylation patterns (only if you request the ``biscuit_epiread`` output; not built by default)
-- ``epibeds/SAMPLE.epibed.gz.tbi``: Tabix index for epibed
-
-File Format Specifications
---------------------------
-
-**Methylation Bed Format**
-
-``beds/SAMPLE.bed.gz`` is the output of ``biscuit pileup | biscuit vcf2bed -k 3 -t cg | biscuit mergecg``:
-one line per CpG **dinucleotide** (both strands merged), keeping only sites covered by at least 3 reads.
-
-**Columns:**
-
-1. **Chromosome**: Reference sequence name
+1. **Chromosome**
 2. **Start**: 0-based start of the CpG
-3. **End**: End of the CpG (start + 2)
-4. **Beta**: Methylation fraction (0.0-1.0)
-5. **Coverage**: Number of reads covering the CpG
+3. **End**: start + 2
+4. **Beta**: methylation fraction (0.0-1.0)
+5. **Coverage**: number of reads covering the CpG
 
 See the `biscuit methylation extraction docs <https://huishenlab.github.io/biscuit/docs/methylextraction.html>`_
 for the authoritative description.
 
-**Epibed Format**
+**wgbs_tools** (``wgbs_tools/``)
 
-``epibeds/SAMPLE.epibed.gz`` (optional) is the bgzipped, tabix-indexed output of ``biscuit epiread``: one line per
-read with run-length-encoded methylation states. See the
-`biscuit epiBED docs <https://huishenlab.github.io/biscuit/docs/epiread>`_ for the column definitions.
+- ``SAMPLE.pat.gz`` (and ``.csi``): read-level CpG methylation patterns (chromosome, CpG index, pattern, count)
+- ``SAMPLE.beta``: a binary array of (methylated, total) read counts per CpG; not a text file
+- ``SAMPLE.mbias/``: per-strand M-bias tables
 
-**wgbs_tools Formats**
+See the `wgbs_tools format docs <https://github.com/nloyfer/wgbs_tools/blob/master/docs/pat_format.md>`_.
 
-- ``wgbs_tools/SAMPLE.pat.gz`` (+ ``.csi``): read-level CpG methylation patterns
-  (chromosome, CpG index, pattern, count)
-- ``wgbs_tools/SAMPLE.beta``: a binary array of (methylated, total) read counts per CpG; not a text file
-- ``wgbs_tools/SAMPLE.mbias/``: per-strand M-bias tables
+**bam2tensor** (``bam2tensor/SAMPLE.methylation.npz``, only with ``--config bam2tensor=True``)
 
-See the `wgbs_tools file format docs <https://github.com/nloyfer/wgbs_tools/blob/master/docs/pat_format.md>`_.
+A NumPy ``.npz`` archive holding a sparse matrix with one row per read (mates merged into one fragment) and one
+column per CpG, plus metadata. See the `bam2tensor docs <https://github.com/mcwdsi/bam2tensor>`_ for the encoding and
+for how to load it; ``bam2tensor-inspect`` summarizes a file.
 
-Quality Control Outputs
+**Epibed** (``epibeds/SAMPLE.epibed.gz`` and ``.tbi``, not built by default)
+
+The bgzipped, tabix-indexed output of ``biscuit epiread``: one line per read, with run-length-encoded
+methylation states. See the `biscuit epiBED docs <https://huishenlab.github.io/biscuit/docs/epiread>`_.
+
+Quality Control
+---------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - File
+     - Contents
+   * - ``fastp/SAMPLE.fastp.json``, ``.html``
+     - Read counts before and after filtering, adapter content, quality and length distributions
+   * - ``fastp/failed.fa.gz``
+     - Reads dropped by fastp
+   * - ``fastqc/SAMPLE_fastqc.html``
+     - FastQC report on the final ``.bam``
+   * - ``samtools/SAMPLE.flagstat.txt``
+     - Alignment summary
+   * - ``samtools/SAMPLE.idxstats.txt``
+     - Reads per chromosome
+   * - ``samtools/SAMPLE.stats.txt``
+     - Detailed alignment metrics
+   * - ``samtools/SAMPLE.markdup.txt``
+     - Duplicate statistics
+   * - ``biscuit/``
+     - biscuit QC tables: conversion, coverage, insert sizes, mapping quality
+   * - ``methyldackel/mbias.txt``, ``mbias_OT.svg``, ``mbias_OB.svg``
+     - M-bias by read position, for the original top and bottom strands
+   * - ``goleft/index.html``
+     - Interactive coverage plots
+   * - ``EXPERIMENT/multiqc/multiqc_report.html``
+     - All of the above, across the experiment's samples
+
+Logs
+----
+
+Each step logs to ``logs/`` in the sample directory, for example ``fastp.log.txt``, ``bwameth.log.txt``,
+``mark-nonconverted.log.txt``, ``samtools-*.log.txt``, ``biscuit-*.log.txt`` and ``bam2tensor.log.txt``.
+Runtime and memory benchmarks for alignment, sorting and subsampling are in ``logs/benchmark/``.
+MultiQC logs to ``EXPERIMENT/multiqc/log.txt``.
+
+Reference Files
+---------------
+
+Built once in ``data/reference/`` and shared by all experiments:
+
+- ``GRCh38.fna``: the unmasked download
+- ``GRCh38-DAC-U2AF1.fna``: the masked reference that everything aligns to
+- ``GRCh38-DAC-U2AF1.fna.bwameth.c2t*``: bwameth (bwa-mem2) indices
+- ``GRCh38-DAC-U2AF1.fna.bis.*``, ``.dau.*``, ``.par.*``: biscuit indices
+- ``biscuit_qc/``: biscuit QC assets
+- ``bam2tensor/``: bam2tensor's CpG position cache (only with ``--config bam2tensor=True``)
+- The two exclusion ``.bed`` files, and an intermediate ``GRCh38-DAC.fna``
+
+Working With the Output
 -----------------------
-
-**fastp Statistics** (``fastp/SAMPLE.fastp.json``):
-
-- Read counts before/after filtering
-- Adapter contamination rates
-- Quality score distributions
-- Length distributions
-
-**FastQC Reports** (``fastqc/SAMPLE_fastqc.html``):
-
-- Per-base sequence quality
-- Per-sequence quality scores
-- Sequence length distribution
-- Overrepresented sequences
-
-**samtools Statistics** (``samtools/``):
-
-- ``SAMPLE.flagstat.txt``: Alignment summary statistics
-- ``SAMPLE.idxstats.txt``: Reads per chromosome
-- ``SAMPLE.stats.txt``: Detailed alignment metrics
-- ``SAMPLE.markdup.txt``: PCR duplicate statistics
-
-**biscuit QC** (``biscuit/``):
-
-- Conversion rate analysis
-- Strand bias assessment
-- Insert size distributions
-- Mapping quality distributions
-- CpG coverage statistics
-
-**MethylDackel M-bias** (``methyldackel/``):
-
-- ``mbias.txt``: M-bias statistics by position
-- ``mbias_OT.svg``: Original top strand M-bias plot
-- ``mbias_OB.svg``: Original bottom strand M-bias plot
-
-**goleft Coverage** (``goleft/index.html``):
-
-- Interactive coverage visualization
-- Depth distribution across chromosomes
-- Coverage uniformity assessment
-
-Log Files
----------
-
-**Process Logs** (``logs/``):
-
-Each processing step generates detailed logs:
-
-- ``fastp.log.txt``: Read trimming and filtering
-- ``bwameth.log.txt``: Alignment process
-- ``mark-nonconverted.log.txt``: Non-conversion detection
-- ``samtools-*.log.txt``: BAM processing steps
-- ``biscuit-*.log.txt``: Methylation calling
-- ``multiqc/log.txt``: QC aggregation
-
-**Benchmark Files** (``logs/benchmark/``):
-
-Runtime and resource usage for key steps:
-
-- ``bwameth.txt``: Alignment performance
-- ``samtools.txt``: BAM processing performance
-- ``seqtk_subsampling.txt``: Subsampling performance
-
-Project-Level Outputs
-----------------------
-
-**MultiQC Report** (``multiqc/multiqc_report.html``):
-
-Comprehensive project summary including:
-
-- Sample quality overview
-- Alignment statistics across samples
-- Conversion efficiency comparison
-- Batch effect detection
-- Interactive plots and tables
-
-**Reference Files** (``reference/``):
-
-Generated once, in ``data/reference/``, and shared by all experiments:
-
-- ``GRCh38-DAC-U2AF1.fna``: Masked reference genome
-- ``GRCh38-DAC-U2AF1.fna.bis.*``: biscuit indices
-- ``GRCh38-DAC-U2AF1.fna.bwameth.*``: bwameth indices
-- ``biscuit_qc/``: QC reference assets
-
-Subsampled Data Outputs
-------------------------
-
-Subsampled analyses (``EXPERIMENT_subsampled/``) generate identical file structures with reduced data:
-
-- **Purpose**: Rapid QC and preliminary analysis
-- **Size**: 5M read pairs per sample (10M total reads)
-- **Structure**: Identical to full analysis
-- **Use case**: Quick validation before full processing
-
-File Size Expectations
-----------------------
-
-**Per Sample (typical 30x coverage):**
-
-- Raw FASTQ: 50-100 GB
-- Final BAM: 15-25 GB  
-- Methylation bed: 200-500 MB
-- Epibed: 1-3 GB
-- wgbs_tools files: 100-300 MB
-- QC outputs: 10-50 MB
-
-**Storage Recommendations:**
-
-- Temporary space: 2-3x raw FASTQ size
-- Final storage: 1.5x raw FASTQ size
-- Reference files: ~20 GB (shared across projects)
-
-Data Access and Analysis
-------------------------
-
-**Recommended Tools:**
-
-- **bedtools**: Intersect methylation with genomic features
-- **tabix**: Random access to compressed bed files
-- **samtools**: BAM file manipulation
-- **wgbs_tools**: Downstream methylation analysis
-- **R/Bioconductor**: Statistical analysis with packages like bsseq, methylKit
-
-**Example Usage:**
 
 .. code-block:: bash
 
-   # Extract methylation for specific region
+   # Methylation calls in a region
    tabix SAMPLE.bed.gz chr1:1000000-2000000
-   
-   # Get read-level patterns for region
-   tabix SAMPLE.epibed.gz chr1:1000000-2000000
-   
-   # Intersect with genomic features
-   bedtools intersect -a features.bed -b SAMPLE.bed.gz
 
-Quality Metrics Interpretation
-------------------------------
+   # Methylation calls that overlap a set of features
+   bedtools intersect -a SAMPLE.bed.gz -b features.bed
 
-**Key QC Thresholds:**
+   # Summarize a bam2tensor file
+   bam2tensor-inspect SAMPLE.methylation.npz
 
-- **Conversion efficiency**: >95% for EM-seq, >90% for BS-seq
-- **Alignment rate**: >85% for human samples
-- **Duplicate rate**: <30% for high-quality libraries
-- **Mean coverage**: Project-dependent (typically 10-30x)
-- **CpG coverage**: >1M CpGs with ≥3x coverage
-
-Next Steps
-----------
-
-See :doc:`pipeline_details` for how each of these outputs is generated.
+See :doc:`pipeline_details` for how each of these outputs is made.

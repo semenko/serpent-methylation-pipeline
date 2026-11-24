@@ -1,73 +1,51 @@
-Pipeline Technical Details
-==========================
+Pipeline Details
+================
 
-This document provides detailed technical information about the Serpent Methylation Pipeline implementation.
+How each step works, and why. The Snakefile is the source of truth, and its comments record more of the reasoning.
 
-Pipeline Overview
------------------
+Overview
+--------
 
-The pipeline processes WGBS bisulfite and EM-seq data through several key stages:
+1. **Reference**: download GRCh38, mask it, and build indices (once)
+2. **Checksums**: verify the MD5 of the raw reads
+3. **Trimming**: fastp
+4. **Alignment**: bwameth on bwa-mem2
+5. **Post-processing**: mark non-converted reads, fix mates, sort, mark duplicates
+6. **Methylation calling**: biscuit bed files and wgbs_tools pat/beta files
+7. **QC**: per-sample tools, then MultiQC per experiment
+8. **Optional**: bam2tensor tensors and biscuit epibeds
 
-1. **Reference Preparation**: Downloads and masks GRCh38 reference
-2. **Quality Control & Trimming**: Uses fastp for adapter trimming, end trimming and its default quality filtering
-3. **Alignment**: Uses bwameth with bwa-mem2 for bisulfite-aware alignment
-4. **Post-processing**: Marks duplicates and non-converted reads
-5. **Methylation Calling**: Uses biscuit for methylation extraction
-6. **Quality Assessment**: Comprehensive QC across multiple tools
-7. **Output Generation**: Creates standardized bed and pat/beta formats (epibed export is optional)
+Steps 3 to 5 run as one job group (``align_core``) connected by named pipes:
+fastp → bwameth → mark-nonconverted → samtools. No intermediate ``.fastq`` or ``.sam`` file is written to disk.
 
-Reference Genome Details
-------------------------
+Reference Genome
+----------------
 
-**GRCh38 Configuration:**
+The reference is the NCBI GRCh38 ``no_alt_plus_hs38d1`` analysis set:
 
-- **Base**: GRCh38 (no patches)
-- **Decoy**: Includes hs38d1 decoy sequences
-- **Exclusions**: 
-  - U2AF1 masking regions
-  - ENCODE DAC exclusion list
-- **Excludes**: ALT contigs (this is the ``no_alt_plus_hs38d1`` analysis set)
+- No patches
+- Includes the hs38d1 decoy
+- No ALT contigs
 
-The reference is downloaded from NCBI and processed to apply masking files:
+Two sets of regions are then masked (replaced with N), giving ``data/reference/GRCh38-DAC-U2AF1.fna``:
 
-.. code-block:: bash
+- The `U2AF1 exclusions <https://genomeref.blogspot.com/2021/07/one-of-these-things-doest-belong.html>`_
+  (``GCA_000001405.15_GRCh38_GRC_exclusions.bed`` from NCBI)
+- The `ENCODE DAC exclusion list <https://www.encodeproject.org/annotations/ENCSR636HFF/>`_ (``ENCFF356LFX``)
 
-   # U2AF1 masking
-   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_GRC_exclusions.bed
-   
-   # ENCODE DAC exclusion
-   https://encode-public.s3.amazonaws.com/2020/05/05/bc5dcc02-eafb-4471-aba0-4ebc7ee8c3e6/ENCFF356LFX.bed.gz
+NCBI explains the analysis sets in
+`this README <https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/README_analysis_sets.txt>`_.
 
-Alignment Strategy
-------------------
+Checksums
+---------
 
-**Primary Aligner: bwameth + bwa-mem2**
+The ``md5sum`` rule compares each read file with the checksum in the experiment CSV, and nothing else runs for a
+sample until it passes. It uses ``md5sum``, or ``md5`` on systems without it (macOS).
 
-The pipeline uses `bwameth <https://github.com/brentp/bwa-meth>`_ with the `bwa-mem2 <https://github.com/bwa-mem/bwa-mem2>`_ backend:
+Trimming
+--------
 
-- **Speed**: bwa-mem2 is substantially faster than standard bwa mem
-- **Accuracy**: Maintains bwameth's bisulfite-aware alignment
-- **Threading**: Uses every core the rest of the piped ``align_core`` job group does not need (all cores minus 8 on a large machine)
-
-**Alignment Parameters:**
-
-- Uses interleaved FASTQ input from fastp
-- Applies read group information for sample tracking
-- Streams uncompressed SAM through named pipes to non-conversion marking, fixmate, sort and markdup
-  (fastp → bwameth → mark-nonconverted → samtools run as one job group; no intermediate files hit disk)
-
-**Alternative: biscuit (currently disabled)**
-
-A biscuit alignment rule is kept (commented out) in the Snakefile; it is disabled due to performance:
-
-- **Accuracy**: Excellent for SNV calling
-- **Speed**: ~30 hours per sample on 40-core machine
-- **Use case**: Enable for projects requiring SNV analysis
-
-Trimming Strategy
------------------
-
-**Method-Specific Trimming:**
+Trimming is deliberately conservative, because of end-repair bias, adaptase bias and more.
 
 +----------+----------+----------+----------+----------+
 | Method   | R1 5'    | R1 3'    | R2 5'    | R2 3'    |
@@ -77,150 +55,76 @@ Trimming Strategy
 | BS-seq   | 10 bp    | 10 bp    | 15 bp    | 10 bp    |
 +----------+----------+----------+----------+----------+
 
-**Trimming Rationale:**
+- **EM-seq**: 10 bp everywhere, from QC and discussions with NEB
+  (`notes <https://github.com/FelixKrueger/Bismark/issues/509>`_)
+- **BS-seq**: an extra 5 bp from the 5' end of R2, because of adaptase bias
+- **Adapters**: TruSeq sequences are given explicitly (no auto-detection)
+- **Poly-G**: not forced; fastp trims poly-G tails when it detects two-color (NextSeq/NovaSeq) data
+- **Length**: reads shorter than 15 bp after trimming are dropped
 
-- **EM-seq**: Conservative 10bp trimming based on NEB recommendations
-- **BS-seq**: Additional 5bp R2 5' trimming due to adaptase bias
-- **Adapters**: TruSeq adapter sequences are given explicitly (no auto-detection)
-- **Poly-G**: Not forced; fastp trims poly-G tails automatically when it detects two-color (NextSeq/NovaSeq) data
-- **Length**: Reads shorter than 15bp after trimming are discarded (written to ``fastp/failed.fa.gz``)
+Quality filtering is minimal: fastp's **default** filter only (reads with more than 40% of bases below Q15, or
+more than 5 Ns, are dropped). Stricter filtering gave little benefit in testing, so filter on MAPQ or base quality
+downstream as needed. Dropped reads are written to ``fastp/failed.fa.gz``.
 
-**Quality Filtering:**
+Alignment
+---------
 
-fastp runs with its **default** quality filter (reads with >40% of bases below Q15, or more than 5 Ns, are
-discarded into ``fastp/failed.fa.gz``). No stricter filtering is applied; filter on MAPQ/base quality downstream as needed.
+`bwameth <https://github.com/brentp/bwa-meth>`_ aligns with the `bwa-mem2 <https://github.com/bwa-mem/bwa-mem2>`_
+backend, which is much faster than classic ``bwa mem``. Each read gets a read group whose ID and sample name
+are the ``sample_id``. bwameth uses every core the rest of the job group does not need (all but 8 on a large machine).
+
+Alignment originally used biscuit, which writes very well annotated ``.bam`` files and supports SNV calling, but
+takes roughly 30 hours per sample on a 40-core machine. That rule is kept, commented out, in the Snakefile.
 
 Post-Alignment Processing
 -------------------------
 
-**Non-Conversion Marking:**
+**Non-conversion marking.** `mark-nonconverted-reads <https://github.com/nebiolabs/mark-nonconverted-reads>`_
+flags reads with 3 or more non-converted Cs. It sets the ``XX:Z:UC`` tag and the QC-fail flag
+(0x200). Flagged reads stay in the ``.bam``; tools that skip QC-failed reads ignore them.
 
-Uses `mark-nonconverted-reads <https://github.com/nebiolabs/mark-nonconverted-reads>`_:
-
-- **Threshold**: 3+ non-converted cytosines per read
-- **Marking**: Sets the XX:Z:UC tag and the QC-fail flag (0x200)
-- **Purpose**: Identifies incomplete bisulfite conversion
-
-**Duplicate Marking:**
-
-Standard samtools workflow:
-
-1. **fixmate**: Adds mate score and MC tags
-2. **sort**: Coordinate-sorted output
-3. **markdup**: Marks PCR duplicates with statistics
+**Duplicate marking.** ``samtools fixmate`` (adds mate tags) → ``samtools sort`` → ``samtools markdup``.
+Duplicates are marked, not removed. The ``.bam`` is written with level-1 compression, for speed, and is
+write-protected.
 
 Methylation Calling
 -------------------
 
-**biscuit pileup → bed Pipeline:**
+**biscuit bed.** ``biscuit pileup`` → ``biscuit vcf2bed -k 3 -t cg`` → ``biscuit mergecg`` → ``bgzip`` and
+``tabix``. The result has one line per CpG dinucleotide, with both strands merged, for CpGs covered by at least
+3 reads.
 
-.. code-block:: bash
+**wgbs_tools.** ``wgbstools bam2pat`` writes pat and beta files and M-bias tables.
 
-   biscuit pileup → biscuit vcf2bed → biscuit mergecg → bgzip + tabix
+**Epibeds (not run by default).** The ``biscuit_epiread`` rule writes read-level epibeds, but nothing depends on
+it. Ask for ``workflow/../data/EXPERIMENT/SAMPLE/epibeds/SAMPLE.epibed.gz`` as a target, or add it to
+``touch_complete_flag``.
 
-**Parameters:**
+**bam2tensor (optional).** With ``--config bam2tensor=True``, `bam2tensor <https://github.com/mcwdsi/bam2tensor>`_
+writes a sparse read-by-CpG matrix per sample. It runs with its defaults: chr1-22, X and Y; MAPQ of at least 20
+and base quality of at least 20; proper pairs only; duplicates and QC-failed reads (so also reads flagged as
+non-converted) are skipped. The first run caches the reference's CpG positions in
+``data/reference/bam2tensor/``, which takes about 10 minutes. This step is not part of a sample's completion
+flag, so it can be added to finished runs.
 
-- **Minimum reads**: 3 reads per CpG site
-- **Coverage**: Retains sites with ≥3x coverage
-- **Format**: Compressed bed with tabix index
-- **Merge**: CpG sites are merged for analysis
+Quality Control
+---------------
 
-**Output Formats:**
+Per sample:
 
-1. **Bed files**: Standard methylation calls
-2. **Pat/Beta**: wgbs_tools format for downstream analysis
-3. **Epibeds**: Read-level methylation patterns (the ``biscuit_epiread`` rule exists but is not part of the
-   default run; request ``epibeds/SAMPLE.epibed.gz`` explicitly, or re-enable it in ``touch_complete_flag``)
+- **fastp**: trimming and filtering statistics
+- **FastQC**: run on the final ``.bam``
+- **samtools**: ``flagstat``, ``idxstats``, ``stats`` and duplicate statistics
+- **biscuit QC**: bisulfite-specific metrics (conversion, coverage, insert sizes)
+- **MethylDackel**: M-bias plots, to check the trimming
+- **goleft indexcov**: coverage estimated from the ``.bam`` index
 
-Quality Control Components
---------------------------
+Per experiment, **MultiQC** gathers these into one report once all of the experiment's samples have finished.
 
-**Per-Sample QC:**
+Software
+--------
 
-- **FastQC**: Read quality assessment on final BAM
-- **fastp**: Trimming and filtering statistics
-- **samtools stats**: Alignment statistics and insert sizes
-- **MethylDackel**: M-bias plots for trimming validation
-- **biscuit QC**: Comprehensive bisulfite-specific metrics
-- **goleft indexcov**: Coverage visualization
+Everything is installed from ``workflow/envs/env.yaml`` (which holds the minimum versions), except:
 
-**Project-Level QC:**
-
-- **MultiQC**: Aggregated report across all samples
-- **Cross-sample comparison**: Batch effect detection
-- **Summary statistics**: Project-wide metrics
-
-Performance Considerations
---------------------------
-
-**Resource Requirements:**
-
-- **Memory**: 64-128GB recommended for alignment
-- **CPU**: Alignment scales with core count
-- **Storage**: ~100GB per sample for intermediate files
-- **Network**: Initial download of reference genomes
-
-**Optimization Features:**
-
-- **Subsampling**: 5M read pairs for rapid QC
-- **Temporary files**: Automatic cleanup of intermediate files
-- **Parallel processing**: Group-based rule execution
-- **Compression**: Level-1 BAM compression for speed
-
-**Cluster Compatibility:**
-
-The pipeline includes safeguards for cluster execution:
-
-- **Thread limiting**: Prevents over-allocation
-- **Memory management**: Configurable per-rule limits
-- **Temporary directories**: Configurable scratch space
-
-Output File Organization
-------------------------
-
-**Directory Structure:**
-
-.. code-block::
-
-   EXPERIMENT/
-   ├── SAMPLE/
-   │   ├── SAMPLE.bam              # Final alignment
-   │   ├── SAMPLE.bam.bai          # BAM index
-   │   ├── beds/                   # Methylation bed files
-   │   ├── epibeds/                # Read-level methylation (optional)
-   │   ├── wgbs_tools/             # Pat/beta format files
-   │   ├── biscuit/                # Biscuit QC files
-   │   ├── fastp/                  # Trimming statistics
-   │   ├── fastqc/                 # Quality control
-   │   ├── goleft/                 # Coverage plots
-   │   ├── methyldackel/           # M-bias plots
-   │   ├── samtools/               # Alignment statistics
-   │   └── logs/                   # Process logs
-   └── multiqc/                    # Project summary
-
-Software Dependencies
----------------------
-
-**Core Tools:**
-
-- **bwameth** (≥0.2.7): Bisulfite alignment
-- **bwa-mem2** (≥2.2.1): Fast alignment backend  
-- **biscuit** (≥1.2.1): Methylation calling
-- **fastp** (≥0.23.2): Read processing
-- **samtools** (≥1.17): BAM manipulation
-
-**QC Tools:**
-
-- **FastQC** (≥0.12.1): Read quality
-- **MultiQC** (≥1.14): Report aggregation
-- **MethylDackel** (≥0.6.1): M-bias analysis
-- **goleft** (≥0.2.4): Coverage analysis
-
-**Utilities:**
-
-- **mark-nonconverted-reads** (≥1.2): Non-conversion detection
-- **seqtk** (≥1.3): Read subsampling
-- **bedtools**: Genome interval operations
-- **wgbs_tools**: Pat/beta format generation (manual install; not available from conda)
-
-All other dependencies are managed through the conda environment in ``workflow/envs/env.yaml``.
+- **wgbs_tools**: not on conda; installed by hand (see :doc:`installation`). Note that its license is restrictive.
+- **bam2tensor**: optional; ``pip install bam2tensor``

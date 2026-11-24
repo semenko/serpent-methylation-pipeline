@@ -8,7 +8,7 @@ CORES="${CORES:-100}"
 SNAKEMAKE_ARGS=(--cores "$CORES" --use-conda --printshellcmds --rerun-incomplete --keep-going --rerun-triggers mtime)
 
 # First, generate subsampled reads (if we need to)
-# This validates md5sums and then runs seqtk to (stably) select 5M reads/paired end (max) = total 10M paired reads
+# This validates md5sums and then runs seqtk to (stably) select up to 5M read pairs per sample (10M reads in total)
 # This runs about 8 jobs in parallel, and takes roughly 8 hours to complete for melanoma (150 samples)
 snakemake "${SNAKEMAKE_ARGS[@]}" --config make-subsampled=True
 

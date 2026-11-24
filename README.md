@@ -15,28 +15,32 @@ A standardized, reproducible pipeline to process WGBS bisulfite & EM-seq data. I
 
 ## Quick Start
 
-The pipeline runs on **Linux only** (several dependencies, such as `bwa-mem2`, are not built for macOS).
+The pipeline runs on **Linux only** (several dependencies, such as `bwa-mem2`, are not built for macOS). Dry runs work anywhere.
 
 1. Clone this repository and open the directory:
    ```bash
    git clone https://github.com/semenko/serpent-methylation-pipeline.git
    cd serpent-methylation-pipeline
    ```
-2. Install Snakemake (8 or newer) via [mamba](https://github.com/conda-forge/miniforge) (or conda):
+2. Install Snakemake (8 or newer; CI tests 8 and the latest release) via [mamba](https://github.com/conda-forge/miniforge) (or conda):
    ```bash
-   mamba install -c bioconda -c conda-forge snakemake snakemake-storage-plugin-http
+   mamba install -c conda-forge -c bioconda snakemake snakemake-storage-plugin-http
    ```
-3. Install [wgbs_tools](https://github.com/nloyfer/wgbs_tools) by hand. It is not on conda, so `--use-conda` cannot provide it. Put `wgbstools` on your `PATH` and initialize a genome named `GRCh38-DAC-U2AF1` from the masked reference the pipeline builds (`data/reference/GRCh38-DAC-U2AF1.fna`). Everything else comes from [env.yaml](workflow/envs/env.yaml).
-4. Check the execution plan for the bundled test sample (this needs network access):
+3. Check the execution plan for the bundled test sample (this needs network access):
    ```bash
    snakemake --cores 4 --use-conda --dry-run
+   ```
+4. Install [wgbs_tools](https://github.com/nloyfer/wgbs_tools) by hand. It is not on conda, so `--use-conda` cannot provide it; everything else comes from [env.yaml](workflow/envs/env.yaml). Put `wgbstools` on your `PATH`, build the masked reference, and initialize a genome named `GRCh38-DAC-U2AF1` from it:
+   ```bash
+   snakemake --cores 4 --use-conda workflow/../data/reference/GRCh38-DAC-U2AF1.fna
+   wgbstools init_genome GRCh38-DAC-U2AF1 --fasta_path data/reference/GRCh38-DAC-U2AF1.fna
    ```
 5. Run it:
    ```bash
    snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete --keep-going --rerun-triggers mtime
    ```
 
-The pipeline needs at least 4 cores. The first run downloads GRCh38 and builds the bwa-mem2 and biscuit indices, which takes hours and tens of GB of RAM and disk.
+The pipeline needs at least 4 cores. The first run downloads GRCh38 and builds the bwa-mem2 and biscuit indices, which takes hours; plan for roughly 128 GB of RAM.
 
 ## Defining Samples
 
@@ -59,9 +63,19 @@ Rows missing a required value are skipped with a warning.
 | `snakemake ...` | Full analysis of every sample. |
 | `snakemake ... --config make-subsampled=True` | Only writes subsampled reads (5M read pairs per sample) to `data/EXPERIMENT_subsampled/`. |
 | `snakemake ... --config analyze-subsampled=True` | Full analysis of the subsampled reads only (generating them first if missing). |
+| `snakemake ... --config bam2tensor=True` | Also exports read-level methylation tensors with [bam2tensor](https://github.com/mcwdsi/bam2tensor) (see below). Off by default. |
 | `snakemake ... --config ntfy_topic=TOPIC` | Sends [ntfy.sh](https://ntfy.sh) notifications (per finished sample, and on overall success/failure) to your topic. Off by default. |
 
-[workflow/analyze-subsamples.sh](workflow/analyze-subsamples.sh) runs the two subsampling steps back to back.
+Flags combine (for example `--config analyze-subsampled=True bam2tensor=True`), except that `make-subsampled` and `analyze-subsampled` are mutually exclusive. [workflow/analyze-subsamples.sh](workflow/analyze-subsamples.sh) runs the two subsampling steps back to back.
+
+### Optional: bam2tensor
+
+[bam2tensor](https://github.com/mcwdsi/bam2tensor) converts each final `.bam` into a sparse read-by-CpG matrix (`.npz`) for machine learning. To use it:
+
+1. Install it where Snakemake can find it. Like wgbs_tools, it is not on conda: `pip install bam2tensor`
+2. Add `--config bam2tensor=True` to your usual command.
+
+Each sample then gets `bam2tensor/SAMPLE_ID.methylation.npz`. This works on runs that have already finished: only the missing tensors are built, and nothing else is redone. bam2tensor runs with its defaults (chr1-22, X and Y; MAPQ and base quality of at least 20; duplicates and reads flagged as non-converted are skipped).
 
 ## What It Does
 
@@ -81,6 +95,7 @@ Rows missing a required value are skipped with a warning.
   - [wgbs_tools](https://github.com/nloyfer/wgbs_tools) pat/beta files
   - Compressed, indexed bed files of CpG methylation
 - Runs [MultiQC](https://multiqc.info) across each experiment
+- Optionally exports read-level methylation tensors with [bam2tensor](https://github.com/mcwdsi/bam2tensor)
 
 ## Output
 
@@ -91,6 +106,7 @@ Rows missing a required value are skipped with a warning.
         ├── SAMPLE_01/
         │   ├── SAMPLE_01.bam       # Sorted, duplicate-marked alignment (write-protected)
         │   ├── SAMPLE_01.bam.bai
+        │   ├── bam2tensor/         # Read-level methylation tensors (optional)
         │   ├── beds/               # CpG methylation calls (bgzipped bed + tabix index)
         │   ├── biscuit/            # biscuit QC
         │   ├── fastp/              # Trimming statistics
@@ -129,6 +145,7 @@ Software requirements are specified in [env.yaml](workflow/envs/env.yaml). Most 
 - [biscuit](https://github.com/huishenlab/biscuit) (methylation calling and QC)
 - NEB's [mark-nonconverted-reads](https://github.com/nebiolabs/mark-nonconverted-reads) (marks partially converted reads)
 - [wgbs_tools](https://github.com/nloyfer/wgbs_tools) (pat/beta files; installed by hand, and note its license is restrictive)
+- [bam2tensor](https://github.com/mcwdsi/bam2tensor) (optional read-level tensors; installed by hand)
 
 Alignment originally used biscuit, which writes very well annotated `.bam` files and supports SNV calling, but takes roughly 30 hours per sample on a 40-core machine. bwameth on bwa-mem2 is far faster. The biscuit alignment rule is kept, commented out, in the Snakefile.
 
@@ -165,14 +182,7 @@ Here's a high-level overview of the Snakemake pipeline (generated via `snakemake
 
 ## For AI Agents
 
-If you are an AI coding agent working in this repository, read [AGENTS.md](AGENTS.md) first. The short version:
-
-- The whole pipeline is one file, [workflow/Snakefile](workflow/Snakefile). Keep it that way; do not split it into modules.
-- Validate every change with `snakemake --cores 4 --dry-run` in all three run modes, plus `snakemake --lint` and `snakefmt --check workflow/Snakefile`. These work on any OS and need only network access.
-- Never start a real run to test a change. It downloads a human genome and needs a large Linux machine.
-- Do not change scientific defaults (trimming lengths, thresholds, the reference build, tool choices) unless you were asked to.
-- Never edit, move or delete anything under `data/` other than the experiment `.csv` files.
-- When behavior changes, update this README and `docs/` in the same change.
+If you are an AI coding agent working in this repository, read [AGENTS.md](AGENTS.md) first. It has the checks to run, the rules for changing the pipeline, and the things that are easy to get wrong.
 
 ## Support & Contributing
 

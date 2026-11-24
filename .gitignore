@@ -10,5 +10,6 @@ data/*_subsampled/
 data/*/multiqc/
 data/*/*/*
 !data/*/*/raw/
+data/*/*/raw/md5.known.txt
 data/*/*/raw/md5.validated.txt
 .pipeline-complete-v*

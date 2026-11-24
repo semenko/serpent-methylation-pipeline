@@ -1,146 +1,127 @@
 Usage Guide
 ===========
 
-Basic Usage
------------
+All commands are run from the repository root.
 
-The Serpent Methylation Pipeline follows a simple workflow:
-
-1. **Prepare your data** (see :doc:`configuration`)
-2. **Run the pipeline**
-3. **Analyze results**
-
-Quick Start Example
--------------------
-
-.. code-block:: bash
-
-   # Navigate to pipeline directory
-   cd serpent-methylation-pipeline
-   
-   # Test run (dry-run mode)
-   snakemake --cores 4 --use-conda --dry-run
-   
-   # Full pipeline execution
-   snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete
-
-Command Line Options
+Running the Pipeline
 --------------------
 
-Essential Snakemake parameters for this pipeline:
+.. code-block:: bash
+
+   # Show what would run, without running it
+   snakemake --cores 4 --use-conda --dry-run
+
+   # Run every sample in every experiment
+   snakemake --cores 4 --use-conda --printshellcmds --rerun-incomplete --keep-going --rerun-triggers mtime
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Option
+     - Meaning
+   * - ``--cores N``
+     - CPU cores to use. At least 4 are needed; give it as many as you have.
+   * - ``--use-conda``
+     - Build and use the tool environment in ``workflow/envs/env.yaml``
+   * - ``--printshellcmds``
+     - Print each shell command as it runs
+   * - ``--rerun-incomplete``
+     - Redo jobs that were interrupted
+   * - ``--keep-going``
+     - Keep running independent jobs after one fails
+   * - ``--rerun-triggers mtime``
+     - Only rerun a job when its inputs are newer than its outputs. Without this, Snakemake also reruns
+       finished jobs whenever a rule's code or parameters change, such as after updating the pipeline.
+   * - ``--dry-run``
+     - Show the plan only
+
+Subsampled Runs
+---------------
+
+For a quick look at library quality, the pipeline can run on a subsample of 5M read pairs per sample.
+Subsampled data lives in a parallel ``data/EXPERIMENT_subsampled/`` directory with the same layout.
 
 .. code-block:: bash
 
-   snakemake \
-     --cores 4 \                    # Number of CPU cores to use
-     --use-conda \                  # Use conda environments
-     --printshellcmds \             # Print shell commands (recommended)
-     --rerun-incomplete \           # Rerun incomplete jobs
-     --rerun-triggers mtime \       # Only rerun when input files are newer (ignore code/param changes)
-     --keep-going \                 # Keep running independent jobs after a failure
-     --dry-run                      # Show what would be executed (test mode)
+   # Write the subsampled reads, and nothing else
+   snakemake --cores 100 --use-conda --config make-subsampled=True
 
-Pipeline Modes
---------------
+   # Run the whole analysis on the subsampled reads only
+   snakemake --cores 100 --use-conda --config analyze-subsampled=True
 
-**Standard Mode**
-   Processes full datasets with complete analysis.
+``analyze-subsampled`` generates any subsampled reads that are missing, so the first command is optional.
+``workflow/analyze-subsamples.sh`` runs both.
 
-**Subsampled Mode**
-   For rapid testing and QC with reduced data:
+bam2tensor Export (Optional)
+----------------------------
 
-   .. code-block:: bash
+`bam2tensor <https://github.com/mcwdsi/bam2tensor>`_ converts each final ``.bam`` into a sparse read-by-CpG
+matrix for machine learning. Install it with ``pip install bam2tensor`` (see :doc:`installation`), then add the flag:
 
-      # Generate subsampled data (5M read pairs per sample) in data/EXPERIMENT_subsampled/
-      snakemake --cores 100 --use-conda --config make-subsampled=True
+.. code-block:: bash
 
-      # Run the whole analysis on the subsampled data only
-      snakemake --cores 100 --use-conda --config analyze-subsampled=True
+   snakemake --cores 16 --use-conda --config bam2tensor=True
 
-   ``workflow/analyze-subsamples.sh`` runs both steps. ``analyze-subsampled`` generates any
-   subsampled reads that are missing, so the first step is optional.
+Each sample gets ``bam2tensor/SAMPLE.methylation.npz`` (see :doc:`output_format`). The flag can be added to a
+run that has already finished: only the missing tensors are built. It combines with ``analyze-subsampled=True``
+and is ignored with ``make-subsampled=True``.
 
-Performance Optimization
--------------------------
-
-**Resource Management**
+Resources
+---------
 
 Trimming, alignment, non-conversion marking and sorting run together as one piped job group that shares
-``--cores`` (alignment gets everything the others don't need), so the pipeline needs **at least 4 cores**.
-Rules declare their memory needs as ``mem_mb`` resources, which you can cap:
+``--cores`` (alignment gets everything the others do not need). That is why at least 4 cores are needed.
+
+Rules declare their memory needs as ``mem_mb`` resources. Snakemake only acts on them if you give it a limit:
 
 .. code-block:: bash
 
-   # Never schedule jobs that together need more than 250GB of RAM
+   # Never run jobs that together need more than 250 GB of RAM
    snakemake --cores 50 --use-conda --resources mem_mb=250000
-   
-   # Specify temporary directory for large intermediate files
+
+   # Put large temporary files (from sorting) on scratch space
    snakemake --cores 20 --use-conda --default-resources "tmpdir='/scratch/tmp/'"
 
-**Cluster Execution**
-
-Snakemake 8+ submits cluster jobs through `executor plugins <https://snakemake.github.io/snakemake-plugin-catalog/>`_
-(the old ``--cluster`` flag was removed):
+**Clusters.** Snakemake 8+ submits cluster jobs through
+`executor plugins <https://snakemake.github.io/snakemake-plugin-catalog/>`_ (the old ``--cluster`` flag is gone):
 
 .. code-block:: bash
 
-   # Example for SLURM
    pip install snakemake-executor-plugin-slurm
    snakemake --executor slurm --jobs 20 --use-conda --default-resources slurm_account=<account>
 
-Monitoring Progress
--------------------
+Notifications
+-------------
 
-**Real-time Monitoring**
-
-.. code-block:: bash
-
-   # Print each shell command as it runs
-   snakemake --cores 4 --use-conda --printshellcmds
-
-   # Generate an execution report after a run
-   snakemake --report report.html
-
-**Notifications**
-
-The pipeline can send best-effort `ntfy.sh <https://ntfy.sh>`_ push notifications (per finished sample, and on overall
-success/failure). They are off by default and include the hostname and output path. To turn them on, set a topic:
+The pipeline can send best-effort `ntfy.sh <https://ntfy.sh>`_ push notifications: one per finished sample, and
+one on overall success or failure. They are off by default, and include the hostname and output path.
+Anyone who knows a topic name can read it, so choose one that is hard to guess:
 
 .. code-block:: bash
 
    snakemake --cores 4 --use-conda --config ntfy_topic=my-private-topic
 
-Resuming Interrupted Runs
---------------------------
+Resuming and Redoing
+--------------------
 
-The pipeline is designed to resume gracefully:
+Rerunning the same command resumes where it stopped.
 
 .. code-block:: bash
 
-   # Resume with incomplete job rerun
-   snakemake --cores 4 --use-conda --rerun-incomplete
-   
-   # Force a rule (and everything downstream of it) to rerun
+   # Force a rule, and everything downstream of it, to rerun
    snakemake --cores 4 --use-conda --forcerun biscuit_bed
 
-Final ``.bam`` files are write-protected. To realign a sample, delete everything in its directory except ``raw/``.
+   # Run a single sample, by asking for its completion flag
+   snakemake --cores 4 --use-conda workflow/../data/EXPERIMENT/SAMPLE/.pipeline-complete-v2
 
-Common Workflows
-----------------
+Targets must be spelled the way the Snakefile builds them, starting with ``workflow/../data/``.
 
-**Full Production Run**
-   Process all samples with complete analysis and QC.
-
-**QC-focused Run**
-   Generate subsampled data for rapid quality assessment.
-
-**Specific Sample Processing**
-   Request a sample's completion flag as the target, e.g.
-   ``snakemake --cores 4 --use-conda workflow/../data/EXPERIMENT/SAMPLE/.pipeline-complete-v2``
-   (targets must be spelled the way the Snakefile builds them, starting ``workflow/../data/``).
+Final ``.bam`` files are write-protected. To redo a sample from scratch, delete everything in its directory
+except ``raw/``.
 
 Next Steps
 ----------
 
-- Review :doc:`output_format` to understand pipeline outputs
-- Check :doc:`pipeline_details` for technical implementation details
+- :doc:`output_format` describes what the pipeline writes
+- :doc:`pipeline_details` explains how and why each step is done
