@@ -15,7 +15,7 @@ A Snakemake pipeline that takes paired-end WGBS / EM-seq `.fastq.gz` files to me
 | `workflow/analyze-subsamples.sh` | Convenience script for the two subsampling steps. |
 | `data/*.csv` | One file per experiment. Each row is a sample. `data/test.csv` is the bundled test. |
 | `data/EXPERIMENT/SAMPLE/raw/` | Input reads. Everything else under `data/` is pipeline output. |
-| `config/` | Placeholder. `config.yaml` is not read by anything. |
+| `config/` | Only `README.md`, which describes the `--config` flags and sample `.csv` files. There is no config file. |
 | `docs/` | Sphinx docs (reStructuredText), deployed to GitHub Pages by `.github/workflows/docs.yml`. |
 | `.github/workflows/main.yml` | CI: snakefmt via super-linter, `snakemake --lint` (advisory), and dry runs on Snakemake 8 and the latest release. |
 | `.github/linters/.snakefmt.toml` | snakefmt settings (strings are not normalized). |
