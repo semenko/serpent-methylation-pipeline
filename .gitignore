@@ -1,1 +1,14 @@
 .snakemake/
+docs/_build/
+__pycache__/
+.DS_Store
+
+# Pipeline outputs. The bundled test reads and experiment .csv files are tracked; everything
+# the pipeline generates under data/ is not.
+data/reference/
+data/*_subsampled/
+data/*/multiqc/
+data/*/*/*
+!data/*/*/raw/
+data/*/*/raw/md5.validated.txt
+.pipeline-complete-v*

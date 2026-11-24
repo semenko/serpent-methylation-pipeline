@@ -15,22 +15,20 @@
 import os
 import pathlib
 import glob
-import gzip
-import re
 import sys
 
 import pandas as pd
 
 # Deal with snakemake >8 transition.
 from snakemake import __version__
+
 if int(__version__.split(".")[0]) < 8:
     from snakemake.remote.HTTP import RemoteProvider as HTTPRemoteProvider
+
     remote_provider = HTTPRemoteProvider()
     # Insane hack that turns this into a function you can call as storage.http instead of remote_provider.remote
     # This is because Snakemake parses/tries to validate we aren't using "storage" as a global variable...
     globals()['storage'] = type('storage', (), {'http': remote_provider.remote})
-
-from snakemake.workflow import Workflow
 
 # Get full path based on Snakemake location
 DATA_PATH = os.path.join(os.path.dirname(workflow.snakefile), "../data")
@@ -43,6 +41,86 @@ data_config_files = glob.glob(f"{DATA_PATH}/*.csv")
 
 # Only operate on EM-seq files (ignore BS-seq)
 EMSEQ_ONLY = False
+
+
+def config_flag(*names):
+    """True if any of these --config flags is set to a truthy value (e.g. --config make-subsampled=True)."""
+    return any(
+        str(config.get(name, False)).strip().lower() in ("true", "1", "yes", "y")
+        for name in names
+    )
+
+
+# make-subsampled: generate subsampled reads from the full .fastq files (and nothing else)
+MAKE_SUBSAMPLED = config_flag("make-subsampled")
+# analyze-subsampled: run the whole pipeline on the _subsampled data (generating it first if it is missing)
+# ("subsampled" is accepted as a legacy alias)
+ANALYZE_SUBSAMPLED = config_flag("analyze-subsampled", "subsampled")
+
+if MAKE_SUBSAMPLED and ANALYZE_SUBSAMPLED:
+    raise ValueError(
+        "Set only one of make-subsampled / analyze-subsampled: generate the subsampled reads first, then analyze them."
+    )
+
+# Optional ntfy.sh topic for push notifications (off by default). Enable with: --config ntfy_topic=my-topic
+NTFY_TOPIC = str(config.get("ntfy_topic", "") or "")
+
+
+def available_cores():
+    """CPUs available to this process (sched_getaffinity respects cgroup/cluster limits, but is Linux-only)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def align_core_threads(job):
+    """
+    Split the core budget between the members of the align_core pipe group.
+
+    fastp, bwameth, mark-nonconverted and samtools are connected by pipes and all run at once, so Snakemake
+    sums their threads: if the group asks for more than --cores (or, on clusters like LSF/RIS, more than the
+    allocation), it fails or is killed. With plenty of cores this is 3 for fastp, 1 for mark-nonconverted,
+    4 for fixmate/sort/markdup, and everything else (all cores but 8) for bwameth. Needs at least 4 cores.
+    """
+    budget = available_cores()
+    if workflow.cores:
+        budget = min(budget, workflow.cores)
+    fastp = max(1, min(3, budget // 4))
+    samtools = max(1, min(4, budget // 4))
+    return {
+        "fastp": fastp,
+        "samtools": samtools,
+        "bwameth": max(1, budget - fastp - samtools - 1),
+    }[job]
+
+
+def normalize_method(method):
+    """Normalize the method column: 'EM-seq', 'em_seq', 'emseq' -> 'emseq'; 'BS-seq' -> 'bsseq'."""
+    return (
+        str(method).strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+    )
+
+
+def is_bsseq(wildcards):
+    """BS-seq samples are identified by the method column (or, historically, a _bsseq sample name)."""
+    return (
+        all_experiments_df.loc[wildcards.sample, "method"] == "bsseq"
+        or "_bsseq" in wildcards.sample
+    )
+
+
+def raw_fastq(wildcards, read):
+    """Raw .fastq.gz for a sample: the path from the .csv, or R1/R2.fastq.gz for _subsampled experiments."""
+    if wildcards.experiment.endswith("_subsampled"):
+        filename = f"R{read}.fastq.gz"
+    else:
+        filename = all_experiments_df.loc[wildcards.sample, f"path_R{read}"]
+    return ancient("{DATA_PATH}/{experiment}/{sample}/raw/" + filename)
+
+
+if not data_config_files:
+    raise FileNotFoundError(f"No experiment .csv files found in {DATA_PATH}/")
 
 # Store a big table of all our experiment .csvs
 all_experiments_df = pd.DataFrame()
@@ -78,8 +156,17 @@ for filename in data_config_files:
     new_length = len(experiment_df)
 
     if original_length != new_length:
+        dropped = original_length - new_length
         print(
-            f"\tWarning: Ignoring {original_length-new_length} samples from experiment '{experiment}' that are missing required values.",
+            f"\tWarning: Ignoring {dropped} samples from experiment '{experiment}' that are missing required values.",
+            file=sys.stderr,
+        )
+
+    experiment_df["method"] = experiment_df["method"].map(normalize_method)
+    unknown_methods = sorted(set(experiment_df["method"]) - {"emseq", "bsseq"})
+    if unknown_methods:
+        print(
+            f"\tWarning: Unrecognized method(s) {unknown_methods} in experiment '{experiment}' (expected emseq or bsseq); these are trimmed as EM-seq.",
             file=sys.stderr,
         )
 
@@ -90,21 +177,23 @@ for filename in data_config_files:
             file=sys.stderr,
         )
 
-    # If the analyze-subsampled flag is enabled, that means we're *operating* on subsampled data
-    # (We're not making it -- it's made on runs with make-subsampled)
-    if "analyze-subsampled" in config:
-        # So we'll append the _subsampled suffix to experiments
+    # If the analyze-subsampled flag is enabled, that means we're *operating* on subsampled data,
+    # so we append the _subsampled suffix to experiments. The raw read paths for _subsampled
+    # experiments are always R1/R2.fastq.gz (see raw_fastq), made by the seqtk_subsample rule.
+    if ANALYZE_SUBSAMPLED:
         experiment_df["experiment"] = experiment + "_subsampled"
-
-        # Note that subsampled data all have the same path data
-        experiment_df = experiment_df.assign(
-            path_R1="R1.fastq.gz", path_R2="R2.fastq.gz"
-        )
-        # For subsampled reads, we've touch()'d the md5 validation file, so the pipeline will skip it.
-        experiment_df = experiment_df.assign(md5sum_R1=None, md5sum_R2=None)
 
     # Append to one mega dataframe of all experiments
     all_experiments_df = pd.concat([all_experiments_df, experiment_df])
+
+# Rules look samples up by sample_id alone, so IDs must be unique across *all* experiments.
+duplicate_ids = sorted(
+    set(all_experiments_df.index[all_experiments_df.index.duplicated()])
+)
+if duplicate_ids:
+    raise ValueError(
+        f"sample_id values must be unique across all experiment .csv files. Duplicates: {duplicate_ids}"
+    )
 
 
 # This is a list of dicts, where each entry is a single sample like:
@@ -133,6 +222,13 @@ print(f"Parsed {len(all_experiments_data)} total sample files.", file=sys.stderr
 ALL_SAMPLES_LIST.extend(all_experiments_data)
 
 
+# Experiments and samples are single path components. Without this, Snakemake's default (.+) wildcards
+# can split a path across {DATA_PATH}/{experiment}/{sample} in more than one way.
+wildcard_constraints:
+    experiment=r"[^/]+",
+    sample=r"[^/]+",
+
+
 ###############
 # Snakemake is a little funny.
 # The first function here just defines what *output* we expect when the whole pipeline is done.
@@ -140,30 +236,40 @@ ALL_SAMPLES_LIST.extend(all_experiments_data)
 rule all:
     input:
         # If you pass the make-subsampled flag, then we'll generate subsampled reads (from the full .fastq)
-        r1ss=[
-            f"{DATA_PATH}/{sample['experiment']}_subsampled/{sample['sample_id']}/raw/R1.fastq.gz"
-            for sample in ALL_SAMPLES_LIST
-        ]
-        if "make-subsampled" in config
-        else [],
-        r2ss=[
-            f"{DATA_PATH}/{sample['experiment']}_subsampled/{sample['sample_id']}/raw/R2.fastq.gz"
-            for sample in ALL_SAMPLES_LIST
-        ]
-        if "make-subsampled" in config
-        else [],
+        r1ss=(
+            [
+                f"{DATA_PATH}/{sample['experiment']}_subsampled/{sample['sample_id']}/raw/R1.fastq.gz"
+                for sample in ALL_SAMPLES_LIST
+            ]
+            if MAKE_SUBSAMPLED
+            else []
+        ),
+        r2ss=(
+            [
+                f"{DATA_PATH}/{sample['experiment']}_subsampled/{sample['sample_id']}/raw/R2.fastq.gz"
+                for sample in ALL_SAMPLES_LIST
+            ]
+            if MAKE_SUBSAMPLED
+            else []
+        ),
         # Each sub-job has a dependency logged here as
-        multiqc=[
-            f"{DATA_PATH}/{sample['experiment']}/{sample['sample_id']}/.pipeline-complete-v2"
-            for sample in ALL_SAMPLES_LIST
-        ] if "make-subsampled" not in config
-        else [],
+        multiqc=(
+            [
+                f"{DATA_PATH}/{sample['experiment']}/{sample['sample_id']}/.pipeline-complete-v2"
+                for sample in ALL_SAMPLES_LIST
+            ]
+            if not MAKE_SUBSAMPLED
+            else []
+        ),
         # Run multiqc per-experiment as our ~last step
-        expt_multiqc=[
-            f"{DATA_PATH}/{sample['experiment']}/multiqc/multiqc_report.html"
-            for sample in ALL_SAMPLES_LIST
-        ] if "make-subsampled" not in config
-        else [],
+        expt_multiqc=(
+            [
+                f"{DATA_PATH}/{experiment}/multiqc/multiqc_report.html"
+                for experiment in sorted({s["experiment"] for s in ALL_SAMPLES_LIST})
+            ]
+            if not MAKE_SUBSAMPLED
+            else []
+        ),
 
 
 ###############
@@ -173,16 +279,17 @@ rule all:
 
 ### Build GRCh38 reference
 # Download our standard reference genome
-# NOTE: This does not include patches (e.g. p14), even though the URL suggests otherwise.
-# This is: GRCh38, with decoys and hs38d1, but no ALT and no patch. For a better understanding, read:
-# https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/README_analysis_sets.txt
+# NOTE: This is the original GRCh38 analysis set and does not include patches (e.g. p14).
+# This is: GRCh38, with the hs38d1 decoy, but no ALT contigs and no patches. For a better understanding, read:
+# https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/README_analysis_sets.txt
+
 
 rule get_reference_genome:
     input:
         # Not really ftp -- it's HTTPS/TLS
         reference_genome=ancient(
             storage.http(
-                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna.gz",
+                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna.gz",
                 keep_local=True,
             )
         ),
@@ -196,13 +303,10 @@ rule get_reference_genome:
 # U2AF1 masking file details: https://genomeref.blogspot.com/2021/07/one-of-these-things-doest-belong.html
 # Encode DAC Exclusion List details: https://www.encodeproject.org/annotations/ENCSR636HFF/
 rule mask_reference_fasta:
-    # TODO: Consider a more modular env definition? (one per rule / rule group?)
-    conda:
-        "envs/env.yaml"
     input:
         u1af1_exclusion=ancient(
             storage.http(
-                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14/GRCh38_major_release_seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_GRC_exclusions.bed",
+                "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_GRC_exclusions.bed",
                 keep_local=True,
             )
         ),
@@ -217,9 +321,12 @@ rule mask_reference_fasta:
         masked_reference_genome="{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna",
     log:
         maskfasta="{DATA_PATH}/reference/maskfasta.log.txt",
+    # TODO: Consider a more modular env definition? (one per rule / rule group?)
+    conda:
+        "envs/env.yaml"
     shell:
         """
-        gunzip -c {input.dac_exclusion} > {DATA_PATH}/reference/DAC-Exclusion-List-ENCFF356LFX.bed
+        gunzip -c {input.dac_exclusion} >{DATA_PATH}/reference/DAC-Exclusion-List-ENCFF356LFX.bed
         cp {input.u1af1_exclusion} {DATA_PATH}/reference/U2AF1-GRCh38-Exclusion.bed
         # maskfasta doesn't work on stdin/stdout, or with gzipped files :/
         # Mask for DAC
@@ -233,12 +340,11 @@ rule mask_reference_fasta:
 ## Build indices
 ###############
 
+
 ### biscuit index
 # Runs once to generate biscuit indices
 # NOTE: Not referenced currently, as we aren't calling SNVs w/ biscuit
 rule biscuit_index:
-    conda:
-        "envs/env.yaml"
     input:
         masked_reference_genome=ancient(
             rules.mask_reference_fasta.output.masked_reference_genome
@@ -253,6 +359,8 @@ rule biscuit_index:
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.par.sa",
     log:
         index="{DATA_PATH}/reference/biscuit_index.log.txt",
+    conda:
+        "envs/env.yaml"
     shell:
         "biscuit index {input.masked_reference_genome} >{log.index} 2>&1"
 
@@ -260,8 +368,6 @@ rule biscuit_index:
 ### biscuit QC index
 # Runs once for the post-alignent QC tools (parsed by multiqc)
 rule biscuit_qc_index:
-    conda:
-        "envs/env.yaml"  # TODO: Add perl for this? (bleh)
     input:
         biscuit_index=ancient(rules.biscuit_index.output),
         masked_reference_genome=ancient(
@@ -271,32 +377,36 @@ rule biscuit_qc_index:
         "{DATA_PATH}/reference/biscuit_qc/cpg.bed.gz",
         "{DATA_PATH}/reference/biscuit_qc/windows100bp.gc_content.bot10p.bed.gz",
         "{DATA_PATH}/reference/biscuit_qc/windows100bp.gc_content.top10p.bed.gz",
-        path="{DATA_PATH}/reference/biscuit_qc/",
     log:
         "{DATA_PATH}/reference/biscuit_qc/biscuit_qc.log.txt",
+    conda:
+        "envs/env.yaml"  # TODO: Add perl for this? (bleh)
     params:
         out_dir="{DATA_PATH}/reference/biscuit_qc/",
     shell:
         """
-        mkdir {params.out_dir}
+        mkdir -p {params.out_dir}
         build_biscuit_QC_assets.pl --verbose --ref {input.masked_reference_genome} --outdir {params.out_dir} >{log} 2>&1
         """
 
+
 ### bwameth index (using bwa-mem2)
 rule bwa_meth_index:
-    conda:
-        "envs/env.yaml"
     input:
-        masked_reference_genome = ancient(rules.mask_reference_fasta.output.masked_reference_genome)
+        masked_reference_genome=ancient(
+            rules.mask_reference_fasta.output.masked_reference_genome
+        ),
     output:
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t",
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.0123",
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.amb",
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.ann",
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.bwt.2bit.64",
-        "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.pac"
+        "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.pac",
     log:
-        index = "{DATA_PATH}/reference/bwameth_bwa-mem2-index.log.txt"
+        index="{DATA_PATH}/reference/bwameth_bwa-mem2-index.log.txt",
+    conda:
+        "envs/env.yaml"
     shell:
         "bwameth.py index-mem2 {input.masked_reference_genome} >{log.index} 2>&1"
 
@@ -305,26 +415,28 @@ rule bwa_meth_index:
 # wgbs_tools index
 # Note we assume you pre-built wgbs_tools
 rule wgbs_tools_index:
-    conda: "envs/env.yaml"
     input:
-        reference = rules.mask_reference_fasta.output.masked_reference_genome
+        reference=rules.mask_reference_fasta.output.masked_reference_genome,
     output:
         "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/chrome.size",
         "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.bed.gz",
         "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.bed.gz.csi",
         "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/CpG.chrome.size",
-        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/rev.CpG.bed.gz.tbi"
+        "{DATA_PATH}/reference/wgbs_tools/GRCh38-DAC-U2AF1/rev.CpG.bed.gz.tbi",
     log:
-        "{DATA_PATH}/reference/wgbs_tools/snakemake_init_genome.log.txt"
+        "{DATA_PATH}/reference/wgbs_tools/snakemake_init_genome.log.txt",
+    conda:
+        "envs/env.yaml"
     shell:
         # NOTE: The -f force in init_genome seems to be required for wgbs_tools to build in a symlinked directory,
         # otherwise it seems to think the index already exists (when it doesn't).
         # NOTE: Consider just run the ln -s if path exists, otherwise this gets re-build on other nodes if there are multiple running nodes
         # and a shared resource directory?
         """
-        ln -s ../{DATA_PATH}/reference/wgbs_tools/ ./wgbs_tools/references
+        ln -sfn "$(realpath {DATA_PATH}/reference/wgbs_tools)" ./wgbs_tools/references
         ./wgbs_tools/wgbstools init_genome GRCh38-DAC-U2AF1 --fasta_path {input.reference} -f >{log} 2>&1
         """
+
 
 ###############
 ### Core Pipeline Steps
@@ -333,17 +445,18 @@ rule wgbs_tools_index:
 
 ### md5
 # Validate checksums
-# This should NOT run on subsampled files
+# This does NOT run on _subsampled experiments (seqtk_subsample touches their md5 files instead).
 rule md5sum:
     input:
-        r1_file=lambda wildcards: ancient("{DATA_PATH}/{experiment}/{sample}/raw/"
-        + all_experiments_df.loc[wildcards.sample, "path_R1"]),
-        r2_file=lambda wildcards: ancient("{DATA_PATH}/{experiment}/{sample}/raw/"
-        + all_experiments_df.loc[wildcards.sample, "path_R2"]),
+        r1_file=lambda wildcards: raw_fastq(wildcards, 1),
+        r2_file=lambda wildcards: raw_fastq(wildcards, 2),
     output:
         # We keep these in the raw directory to make it easier to reset/remove runs (rm everything except raw/)
         checksums="{DATA_PATH}/{experiment}/{sample}/raw/md5.known.txt",
         validated="{DATA_PATH}/{experiment}/{sample}/raw/md5.validated.txt",
+    wildcard_constraints:
+        experiment=r"[^/]+(?<!_subsampled)",
+    threads: 25  # Bit of a hack: this is IO bound, try to throttle it a bit
     params:
         r1_checksum=lambda wildcards: all_experiments_df.loc[
             wildcards.sample, "md5sum_R1"
@@ -351,21 +464,17 @@ rule md5sum:
         r2_checksum=lambda wildcards: all_experiments_df.loc[
             wildcards.sample, "md5sum_R2"
         ],
-        subsampled="subsampled" in config,
-    threads: 25  # Bit of a hack: this is IO bound, try to throttle it a bit
     shell:
         """
-        echo -e "{params.r1_checksum}\t{input.r1_file}\n{params.r2_checksum}\t{input.r2_file}" > {output.checksums}
-        ( [ "{params.subsampled}" = "True" ] && touch {output.validated}) || md5sum --check {output.checksums} > {output.validated}
+        echo -e "{params.r1_checksum}\t{input.r1_file}\n{params.r2_checksum}\t{input.r2_file}" >{output.checksums}
+        md5sum --check {output.checksums} >{output.validated}
         """
 
 
 ### subsample
-# This rule only executes if you do NOT set the subsampled flag -- it generates parallel experiment
-# directories consisting of subsampled reads to perform rapid analyses.
+# This generates parallel experiment directories (EXPERIMENT_subsampled/) of subsampled reads for rapid
+# analyses. It runs with --config make-subsampled=True, or on demand for analyze-subsampled=True.
 rule seqtk_subsample:
-    conda:
-        "envs/env.yaml"
     input:
         md5_sums=ancient(rules.md5sum.output.validated),
         r1_file=rules.md5sum.input.r1_file,
@@ -381,14 +490,16 @@ rule seqtk_subsample:
         md5_validated=touch(
             "{DATA_PATH}/{experiment}_subsampled/{sample}/raw/md5.validated.txt"
         ),
+    log:
+        seqtk_err="{DATA_PATH}/{experiment}/{sample}/logs/seqtk_subsampling.log.txt",
+    benchmark:
+        "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/seqtk_subsampling.txt"
+    conda:
+        "envs/env.yaml"
+    threads: 8
     params:
         seed=4242,  # seed required for stable pairs
         reads=5000000,  # 5 million-per pair (10M total)
-    log:
-        seqtk_err="{DATA_PATH}/{experiment}/{sample}/logs/seqtk_subsampling.log.txt",
-    threads: 8
-    benchmark:
-        "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/seqtk_subsampling.txt"
     shell:
         """
         seqtk sample -s {params.seed} {input.r1_file} {params.reads} 2>{log.seqtk_err} | pigz --fast --processes {threads} >{output.r1_file_ss}
@@ -397,17 +508,13 @@ rule seqtk_subsample:
 
 
 ### fastp
-# We adapter trimming, poly-g filtering, and initial quality filtering
+# Adapter trimming and fastp's default poly-G / quality filtering
 # NOTE: We also do read trimming here, 10-15 BP depending on EM- vs BS-seq
 rule fastp:
-    group:
-        "align_core"
-    conda:
-        "envs/env.yaml"
     input:
-        md5_sums=ancient(rules.md5sum.output.validated),
-        r1_file=rules.md5sum.input.r1_file,
-        r2_file=rules.md5sum.input.r2_file,
+        md5_sums=ancient("{DATA_PATH}/{experiment}/{sample}/raw/md5.validated.txt"),
+        r1_file=lambda wildcards: raw_fastq(wildcards, 1),
+        r2_file=lambda wildcards: raw_fastq(wildcards, 2),
     output:
         fastp_pipe_output=temp(
             pipe("{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa")
@@ -423,19 +530,23 @@ rule fastp:
         ),
     log:
         fastp_err="{DATA_PATH}/{experiment}/{sample}/logs/fastp.log.txt",
-    threads: 3  # Three threads is apparently the default.
+    group:
+        "align_core"
+    conda:
+        "envs/env.yaml"
+    threads: lambda wildcards: align_core_threads("fastp")  # Up to 3 (fastp's default)
     resources:
-       mem_mb = 6000
+        mem_mb=6000,
     params:
         # Note: --overrepresentation_analysis was overwhelming with our huge sequencing data, disabled for now.
         ## Trim specific to BS vs EM-seq input type
         # Note that we could probably be less conservative, and trim less from EMSeq
-        # NEB says as ltitle as 5bp, and methylseq/nf-core uses 8 all around
+        # NEB says as little as 5bp, and methylseq/nf-core uses 8 all around
         # See discussion: https://github.com/FelixKrueger/Bismark/issues/509
         trim_r1_5prime="10",
         trim_r1_3prime="10",
         # bs_seq has a huge adaptase bias
-        trim_r2_5prime=lambda wildcards: "15" if "_bsseq" in wildcards.sample else "10",
+        trim_r2_5prime=lambda wildcards: "15" if is_bsseq(wildcards) else "10",
         trim_r2_3prime="10",
         minimum_length=15,
         # TruSeq adapters (we could autodetect, but I prefer being explicit)   
@@ -444,42 +555,40 @@ rule fastp:
     shell:
         """
         fastp --in1 {input.r1_file} --in2 {input.r2_file} \
-        --trim_front1 {params.trim_r1_5prime} --trim_tail1 {params.trim_r1_3prime} \
-        --trim_front2 {params.trim_r2_5prime} --trim_tail2 {params.trim_r2_3prime} \
-        --length_required {params.minimum_length} \
-        --adapter_sequence "{params.adapter_r1}" --adapter_sequence_r2 "{params.adapter_r2}" \
-        --json "{output.fastp_json}" --html "{output.fastp_html}" \
-        --thread {threads} --verbose --failed_out {output.fastp_failed} --stdout \
-        2>{log.fastp_err} >{output.fastp_pipe_output}
+            --trim_front1 {params.trim_r1_5prime} --trim_tail1 {params.trim_r1_3prime} \
+            --trim_front2 {params.trim_r2_5prime} --trim_tail2 {params.trim_r2_3prime} \
+            --length_required {params.minimum_length} \
+            --adapter_sequence "{params.adapter_r1}" --adapter_sequence_r2 "{params.adapter_r2}" \
+            --json "{output.fastp_json}" --html "{output.fastp_html}" \
+            --thread {threads} --verbose --failed_out {output.fastp_failed} --stdout \
+            2>{log.fastp_err} >{output.fastp_pipe_output}
         """
 
 
 ### bwameth / bwa-mem2
 # Blazing fast alignment
 rule bwa_meth:
+    input:
+        input_fasta="{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
+        reference_genome=rules.mask_reference_fasta.output.masked_reference_genome,
+        bwa_meth_indices=ancient(rules.bwa_meth_index.output),  # We assume ancient, to not force re-run of bwa mem vs bwa-mem2
+    output:
+        temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam")),
+    log:
+        bwameth_err="{DATA_PATH}/{experiment}/{sample}/logs/bwameth.log.txt",
+    benchmark:
+        "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/bwameth.txt"
     group:
         "align_core"
     conda:
         "envs/env.yaml"
-    input:
-        input_fasta = "{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
-        reference_genome = rules.mask_reference_fasta.output.masked_reference_genome,
-        bwa_meth_indices = ancient(rules.bwa_meth_index.output)  # We assume ancient, to not force re-run of bwa mem vs bwa-mem2
-    output:
-        temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam"))
+    # All cores but 8 (the rest of the pipe group needs those): see align_core_threads
+    threads: lambda wildcards: align_core_threads("bwameth")
+    resources:
+        mem_mb=72000,
     params:
         # TODO: Should we include the platform or barcode here? Does that have value for us?
-        read_group = "@RG\\tID:{sample}\\tSM:{sample}"
-    log:
-        bwameth_err = "{DATA_PATH}/{experiment}/{sample}/logs/bwameth.log.txt"
-    benchmark:
-        "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/bwameth.txt"
-    # On some cluster executions (e.g., LSF/RIS), we need to limit the number of threads a bit, becuase at runtime,
-    # if the execution group exceeds the allocation, it's killed. Here, we limit to N-8.
-    # The 8 comes from the rest of the thread group: 3 for fastp, 1 for mark nonconverted, 3 for fixmate/sort/markdup
-    threads: lambda x: len(os.sched_getaffinity(0))-8  # All cores but 8
-    resources:
-       mem_mb = 72000
+        read_group="@RG\\tID:{sample}\\tSM:{sample}",
     shell:
         "bwameth.py -p -t {threads} --read-group '{params.read_group}' --reference {input.reference_genome} {input.input_fasta} 2>{log.bwameth_err} >{output}"
 
@@ -487,10 +596,10 @@ rule bwa_meth:
 ### biscuit
 # Solid for SNV analysis, but *very slow* -- approximately 30 hours on a 40 core machine.
 # NOTE: Temporarily not used, as we're not doing SNV analysis at the moment.
-#rule biscuit:
+# rule biscuit:
 #    group:
 #        "align_core"
-#-2    conda:
+# -2    conda:
 #        "envs/env.yaml"
 #    input:
 #        input_fasta="{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
@@ -517,10 +626,6 @@ rule bwa_meth:
 # This sets XX:Z:UC (the X? Y? and Z? fields of SAM/BAM are user-reserved). And sets the Vendor Failed bit.
 # Note that MethylDackel can independently identify poor conversion (set minConversionEfficiency).
 rule mark_nonconverted:
-    group:
-        "align_core"
-    conda:
-        "envs/env.yaml"
     input:
         aligned_sam="{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam",
         reference_genome=rules.mask_reference_fasta.output.masked_reference_genome,
@@ -528,6 +633,10 @@ rule mark_nonconverted:
         temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/nonconv-marked.sam")),
     log:
         nonconverted="{DATA_PATH}/{experiment}/{sample}/logs/mark-nonconverted.log.txt",
+    group:
+        "align_core"
+    conda:
+        "envs/env.yaml"
     params:
         threshold=3,  # If 3 nonconverted Cs on a read, consider it nonconverted
     shell:
@@ -542,10 +651,6 @@ rule mark_nonconverted:
 ## So now we're one large block shell command *shrug*.
 # NOTE: This is the final step in the core alignment pipeline: markdup writes a (lightly) compressed .bam file and index.
 rule samtools_fixmate_sort_markdup:
-    group:
-        "align_core"
-    conda:
-        "envs/env.yaml"
     input:
         mark_nonconv=rules.mark_nonconverted.output,
     output:
@@ -560,9 +665,13 @@ rule samtools_fixmate_sort_markdup:
         markdup="{DATA_PATH}/{experiment}/{sample}/logs/samtools-markdup.log.txt",
     benchmark:
         "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/samtools.txt"
-    threads: 4
+    group:
+        "align_core"
+    conda:
+        "envs/env.yaml"
+    threads: lambda wildcards: align_core_threads("samtools")  # Up to 4
     resources:
-       mem_mb = 64000
+        mem_mb=64000,
     shell:
         # fixmate is needed for markdup -- it adds ms and MC tags
         # fixmate: -u uncompressed output / -m add mate score tag
@@ -572,9 +681,9 @@ rule samtools_fixmate_sort_markdup:
         #  biscuit bsstrand -c -y {input.reference_genome} - {output.bam} >{log.bsstrand} 2>&1
         #  biscuit: -c correct YD tag, -y append YC and YG tags
         """
-        cat {input.mark_nonconv} | samtools fixmate -u -m --output-fmt SAM --threads 1 - - 2>{log.fixmate} | \
-        samtools sort --output-fmt SAM -m 12G --threads {threads} -T {resources.tmpdir} - 2>{log.sort} | \
-        samtools markdup -f {output.stats_file} --output-fmt BAM --output-fmt-option level=1 --threads {threads} -T {resources.tmpdir} - {output.bam} 2>{log.markdup}
+        cat {input.mark_nonconv} | samtools fixmate -u -m --output-fmt SAM --threads 1 - - 2>{log.fixmate} \
+            | samtools sort --output-fmt SAM -m 12G --threads {threads} -T {resources.tmpdir} - 2>{log.sort} \
+            | samtools markdup -f {output.stats_file} --output-fmt BAM --output-fmt-option level=1 --threads {threads} -T {resources.tmpdir} - {output.bam} 2>{log.markdup}
         """
 
 
@@ -582,16 +691,17 @@ rule samtools_fixmate_sort_markdup:
 ### Statistics and QC Graphs
 ###############
 
+
 ### samtools index
 rule samtools_index:
-    conda:
-        "envs/env.yaml"
     input:
         rules.samtools_fixmate_sort_markdup.output.bam,
     output:
         "{DATA_PATH}/{experiment}/{sample}/{sample}.bam.bai",
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/samtools-index-bai.log.txt",
+    conda:
+        "envs/env.yaml"
     shell:
         # Note: the markdup makes a .csi index, but more classically like .bai's
         "samtools index -b {input} >{log} 2>&1"
@@ -599,8 +709,6 @@ rule samtools_index:
 
 ### samtools statistics
 rule samtools_statistics:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         # Note: we can operate on the .csi index above, but I worry there's a race where
@@ -614,6 +722,8 @@ rule samtools_statistics:
         flagstat="{DATA_PATH}/{experiment}/{sample}/logs/samtools-flagstat.log.txt",
         idxstats="{DATA_PATH}/{experiment}/{sample}/logs/samtools-idxstats.log.txt",
         stats="{DATA_PATH}/{experiment}/{sample}/logs/samtools-stats.log.txt",
+    conda:
+        "envs/env.yaml"
     shell:
         """
         samtools flagstat {input.bam} 2>{log.flagstat} >{output.flagstat}
@@ -627,8 +737,6 @@ rule samtools_statistics:
 # We make this one long pipe, since the .vcf is enormous (~10GB/alignment), and we don't need to keep it around.
 # NOTE: mergecg expects a sorted .bed -- I'm pretty sure the sort here is unnecessary, but it's cheap enough.
 rule biscuit_bed:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         masked_reference_genome=ancient(
@@ -642,20 +750,22 @@ rule biscuit_bed:
         pileup="{DATA_PATH}/{experiment}/{sample}/logs/biscuit-pileup.log.txt",
         vcf2bed="{DATA_PATH}/{experiment}/{sample}/logs/biscuit-vcf2bed.log.txt",
         mergecg="{DATA_PATH}/{experiment}/{sample}/logs/biscuit-mergecg.log.txt",
+    conda:
+        "envs/env.yaml"
+    threads: 10
+    resources:
+        mem_mb=128000,
     params:
         out_dir="{DATA_PATH}/{experiment}/{sample}/beds/",
         sample_str="{sample}",
         minimum_reads=3,
-    threads: 10
-    resources:
-       mem_mb = 128000
     shell:
         """
-        biscuit pileup -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log.pileup} | \
-        biscuit vcf2bed -k {params.minimum_reads} -t cg - 2>{log.vcf2bed} | \
-        LC_ALL=C sort -S 5% -k1,1 -k2,2n | \
-        biscuit mergecg {input.masked_reference_genome} - 2>{log.mergecg} | \
-        bgzip --compress-level 9 > {params.out_dir}/{params.sample_str}.bed.gz
+        biscuit pileup -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log.pileup} \
+            | biscuit vcf2bed -k {params.minimum_reads} -t cg - 2>{log.vcf2bed} \
+            | LC_ALL=C sort -S 5% -k1,1 -k2,2n \
+            | biscuit mergecg {input.masked_reference_genome} - 2>{log.mergecg} \
+            | bgzip --compress-level 9 >{params.out_dir}/{params.sample_str}.bed.gz
 
         tabix -p bed {params.out_dir}/{params.sample_str}.bed.gz
         """
@@ -669,8 +779,6 @@ rule biscuit_bed:
 # TODO: Investigate pairwise mode?
 # NOTE: Temporarily disabled
 rule biscuit_epiread:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         masked_reference_genome=ancient(
@@ -682,14 +790,16 @@ rule biscuit_epiread:
         "{DATA_PATH}/{experiment}/{sample}/epibeds/{sample}.epibed.gz.tbi",
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/biscuit_epiread.log.txt",
+    conda:
+        "envs/env.yaml"
+    threads: 4
     params:
         out_dir="{DATA_PATH}/{experiment}/{sample}/epibeds/",
         sample_str="{sample}",
-    threads: 4
     shell:
         """
         mkdir -p {params.out_dir}
-        biscuit epiread -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log} | LC_ALL=C sort -S 5% --parallel={threads} -k1,1 -k2,2n | bgzip > {params.out_dir}/{params.sample_str}.epibed.gz
+        biscuit epiread -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log} | LC_ALL=C sort -S 5% --parallel={threads} -k1,1 -k2,2n | bgzip >{params.out_dir}/{params.sample_str}.epibed.gz
         tabix -p bed {params.out_dir}/{params.sample_str}.epibed.gz
         """
 
@@ -697,31 +807,30 @@ rule biscuit_epiread:
 ### biscuit QC script
 # Usage: QC.sh [-h,--help] [-s,--single-end] [-v,--vcf] [-o,--outdir] [-k,--keep-tmp-files] [-n,--no-cov-qc] assets_directory genome sample_name in_bam
 rule biscuit_qc:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         masked_reference_genome=ancient(
             rules.mask_reference_fasta.output.masked_reference_genome
         ),
-        biscuit_qc_index=rules.biscuit_qc_index.output.path,
+        biscuit_qc_index=rules.biscuit_qc_index.output,
         index=rules.samtools_index.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/biscuit/{sample}_cv_table.txt",  # This makes *tons* of output, but this is the last file generated.
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/biscuit_qc.log.txt",
+    conda:
+        "envs/env.yaml"
+    threads: 1
     params:
         out_dir="{DATA_PATH}/{experiment}/{sample}/biscuit/",
+        assets_dir=rules.biscuit_qc_index.params.out_dir,
         sample_str="{sample}",
-    threads: 1
     shell:
-        "QC.sh --outdir {params.out_dir} {input.biscuit_qc_index} {input.masked_reference_genome} {params.sample_str} {input.bam} >{log} 2>&1"
+        "QC.sh --outdir {params.out_dir} {params.assets_dir} {input.masked_reference_genome} {params.sample_str} {input.bam} >{log} 2>&1"
 
 
 ### MethylDackel mbias
 rule methyldackel_mbias_plots:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         reference=rules.mask_reference_fasta.output.masked_reference_genome,
@@ -732,37 +841,37 @@ rule methyldackel_mbias_plots:
         mbias_ob="{DATA_PATH}/{experiment}/{sample}/methyldackel/mbias_OB.svg",
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/methyldackel-mbias.log.txt",
+    conda:
+        "envs/env.yaml"
+    threads: 1
     params:
         out_dir="{DATA_PATH}/{experiment}/{sample}/methyldackel/mbias",
-    threads: 1
     shell:
         "MethylDackel mbias -@ {threads} --txt {input.reference} {input.bam} {params.out_dir} 2>{log} >{output.mbias_txt}"
 
 
 ### FastQC stats
 rule fastqc_bam:
-    conda:
-        "envs/env.yaml"
     input:
         rules.samtools_fixmate_sort_markdup.output.bam,
     output:
         "{DATA_PATH}/{experiment}/{sample}/fastqc/{sample}_fastqc.html",
-    params:
-        out_dir="{DATA_PATH}/{experiment}/{sample}/fastqc/",
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/fastqc.log.txt",
+    conda:
+        "envs/env.yaml"
     threads: 8
+    params:
+        out_dir="{DATA_PATH}/{experiment}/{sample}/fastqc/",
     shell:
         """
         mkdir -p {params.out_dir}
-        fastqc --threads 8 --outdir {params.out_dir} {input} >{log} 2>&1
+        fastqc --threads {threads} --outdir {params.out_dir} {input} >{log} 2>&1
         """
 
 
 ### goleft indexcov
 rule goleft_indexcov:
-    conda:
-        "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
         index=rules.samtools_index.output,
@@ -770,6 +879,8 @@ rule goleft_indexcov:
         "{DATA_PATH}/{experiment}/{sample}/goleft/index.html",
     log:
         "{DATA_PATH}/{experiment}/{sample}/logs/goleft.log.txt",
+    conda:
+        "envs/env.yaml"
     params:
         out_dir="{DATA_PATH}/{experiment}/{sample}/goleft/",
     shell:
@@ -779,8 +890,6 @@ rule goleft_indexcov:
 
 ### wgbs_tools pat/beta file formats
 rule wgbs_tools_pat_beta:
-    conda:
-        "envs/env.yaml"
     input:
         # index=rules.wgbs_tools_index.output, # Temporarily assume pre-built index.
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
@@ -789,22 +898,21 @@ rule wgbs_tools_pat_beta:
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz",
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.pat.gz.csi",
         "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.mbias/{sample}.mbias.OB.txt",
-        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.mbias/{sample}.mbias.OT.txt"
+        "{DATA_PATH}/{experiment}/{sample}/wgbs_tools/{sample}.mbias/{sample}.mbias.OT.txt",
     log:
-        "{DATA_PATH}/{experiment}/{sample}/logs/wgbs_tools-bam2pat.log.txt"
-    params:
-        out_dir="{DATA_PATH}/{experiment}/{sample}/wgbs_tools/"
+        "{DATA_PATH}/{experiment}/{sample}/logs/wgbs_tools-bam2pat.log.txt",
+    conda:
+        "envs/env.yaml"
     threads: 8
+    params:
+        out_dir="{DATA_PATH}/{experiment}/{sample}/wgbs_tools/",
     shell:
         "wgbstools bam2pat --genome GRCh38-DAC-U2AF1 --out_dir {params.out_dir} --mbias --verbose --threads {threads} {input.bam} >{log} 2>&1"
-
 
 
 ### Run Aggregator
 # Note: This pan-dependency ensures all other jobs are run.
 rule touch_complete_flag:
-    conda:
-        "envs/env.yaml"
     input:
         # rules.biscuit_epiread.output,
         rules.biscuit_bed.output,
@@ -816,43 +924,50 @@ rule touch_complete_flag:
         rules.wgbs_tools_pat_beta.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/.pipeline-complete-v2",
+    conda:
+        "envs/env.yaml"
     params:
         out_flag="{DATA_PATH}/{experiment}/{sample}/.pipeline-complete-v2",
+        ntfy_topic=NTFY_TOPIC,
     shell:
+        # The notification is best-effort: a missing curl or network must never fail the job.
         """
         touch {params.out_flag}
-        curl -H "Priority: low" -d "$HOSTNAME: {params.out_flag}" ntfy.sh/semenko-snakemake
+        if [ -n "{params.ntfy_topic}" ]; then
+            curl --silent --max-time 10 -H "Priority: low" -d "$HOSTNAME: {params.out_flag}" "ntfy.sh/{params.ntfy_topic}" >/dev/null 2>&1 || true
+        fi
         """
 
 
 ### multiqc
 # Across an entire experiment/project, not per-sample or batch
 rule multiqc:
-    conda:
-        "envs/env.yaml"
     input:
         rules.all.input.multiqc,
     output:
         "{DATA_PATH}/{experiment}/multiqc/multiqc_report.html",
+    log:
+        "{DATA_PATH}/{experiment}/multiqc/log.txt",
+    conda:
+        "envs/env.yaml"
     params:
         in_dir="{DATA_PATH}/{experiment}/",
         out_dir="{DATA_PATH}/{experiment}/multiqc/",
-    log:
-        "{DATA_PATH}/{experiment}/multiqc/log.txt",
     shell:
         "multiqc --outdir {params.out_dir} --force --verbose --interactive --exclude snippy {params.in_dir} >{log} 2>&1"
 
 
-ruleorder: md5sum > seqtk_subsample
+# ntfy.sh push for the whole job (best-effort)
+def ntfy(title, tags, message):
+    if NTFY_TOPIC:
+        shell(
+            'curl --silent --max-time 10 -H "Title: {title}" -H "Tags: {tags}" -d "{message} on $HOSTNAME" "ntfy.sh/{NTFY_TOPIC}" >/dev/null 2>&1 || true'
+        )
 
-# nfty.sh push for the whole job
+
 onsuccess:
-    shell(
-        'curl -H "Title: Success" -H "Tags: tada" -d "Job complete on $HOSTNAME" ntfy.sh/semenko-snakemake'
-    )
+    ntfy("Success", "tada", "Job complete")
 
 
 onerror:
-    shell(
-        'curl -H "Title: Failure" -H "Tags: warning" -d "Job failure on $HOSTNAME" ntfy.sh/semenko-snakemake'
-    )
+    ntfy("Failure", "warning", "Job failure")

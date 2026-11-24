@@ -36,8 +36,8 @@ Essential Snakemake parameters for this pipeline:
      --use-conda \                  # Use conda environments
      --printshellcmds \             # Print shell commands (recommended)
      --rerun-incomplete \           # Rerun incomplete jobs
-     --rerun-triggers mtime \       # Rerun when files are modified
-     --keep-going \                 # Continue on non-critical errors
+     --rerun-triggers mtime \       # Only rerun when input files are newer (ignore code/param changes)
+     --keep-going \                 # Keep running independent jobs after a failure
      --dry-run                      # Show what would be executed (test mode)
 
 Pipeline Modes
@@ -51,22 +51,27 @@ Pipeline Modes
 
    .. code-block:: bash
 
-      # Generate subsampled data (5M reads per sample)
-      snakemake --cores 100 --use-conda --until seqtk_subsample
-      
-      # Run analysis on subsampled data
-      snakemake --cores 100 --use-conda --config subsampled=True
+      # Generate subsampled data (5M read pairs per sample) in data/EXPERIMENT_subsampled/
+      snakemake --cores 100 --use-conda --config make-subsampled=True
+
+      # Run the whole analysis on the subsampled data only
+      snakemake --cores 100 --use-conda --config analyze-subsampled=True
+
+   ``workflow/analyze-subsamples.sh`` runs both steps. ``analyze-subsampled`` generates any
+   subsampled reads that are missing, so the first step is optional.
 
 Performance Optimization
 -------------------------
 
 **Resource Management**
 
-The pipeline automatically detects available CPU cores but you can optimize based on your system:
+Trimming, alignment, non-conversion marking and sorting run together as one piped job group that shares
+``--cores`` (alignment gets everything the others don't need), so the pipeline needs **at least 4 cores**.
+Rules declare their memory needs as ``mem_mb`` resources, which you can cap:
 
 .. code-block:: bash
 
-   # For high-memory systems
+   # Never schedule jobs that together need more than 250GB of RAM
    snakemake --cores 50 --use-conda --resources mem_mb=250000
    
    # Specify temporary directory for large intermediate files
@@ -74,12 +79,14 @@ The pipeline automatically detects available CPU cores but you can optimize base
 
 **Cluster Execution**
 
-For cluster environments, use appropriate profiles:
+Snakemake 8+ submits cluster jobs through `executor plugins <https://snakemake.github.io/snakemake-plugin-catalog/>`_
+(the old ``--cluster`` flag was removed):
 
 .. code-block:: bash
 
    # Example for SLURM
-   snakemake --cores 100 --use-conda --cluster "sbatch -t 24:00:00 -c {threads} --mem {resources.mem_mb}"
+   pip install snakemake-executor-plugin-slurm
+   snakemake --executor slurm --jobs 20 --use-conda --default-resources slurm_account=<account>
 
 Monitoring Progress
 -------------------
@@ -88,15 +95,20 @@ Monitoring Progress
 
 .. code-block:: bash
 
-   # Enable detailed logging
-   snakemake --cores 4 --use-conda --printshellcmds --reason
-   
-   # Generate execution report
-   snakemake --cores 4 --use-conda --report report.html
+   # Print each shell command as it runs
+   snakemake --cores 4 --use-conda --printshellcmds
+
+   # Generate an execution report after a run
+   snakemake --report report.html
 
 **Notifications**
 
-The pipeline includes optional notifications via ntfy.sh. These can be disabled by removing the curl commands in the Snakefile.
+The pipeline can send best-effort `ntfy.sh <https://ntfy.sh>`_ push notifications (per finished sample, and on overall
+success/failure). They are off by default and include the hostname and output path. To turn them on, set a topic:
+
+.. code-block:: bash
+
+   snakemake --cores 4 --use-conda --config ntfy_topic=my-private-topic
 
 Resuming Interrupted Runs
 --------------------------
@@ -108,8 +120,10 @@ The pipeline is designed to resume gracefully:
    # Resume with incomplete job rerun
    snakemake --cores 4 --use-conda --rerun-incomplete
    
-   # Force rerun of specific samples
-   snakemake --cores 4 --use-conda --forcerun sample_name
+   # Force a rule (and everything downstream of it) to rerun
+   snakemake --cores 4 --use-conda --forcerun biscuit_bed
+
+Final ``.bam`` files are write-protected. To realign a sample, delete everything in its directory except ``raw/``.
 
 Common Workflows
 ----------------
@@ -121,11 +135,12 @@ Common Workflows
    Generate subsampled data for rapid quality assessment.
 
 **Specific Sample Processing**
-   Target specific samples using Snakemake's target specification.
+   Request a sample's completion flag as the target, e.g.
+   ``snakemake --cores 4 --use-conda workflow/../data/EXPERIMENT/SAMPLE/.pipeline-complete-v2``
+   (targets must be spelled the way the Snakefile builds them, starting ``workflow/../data/``).
 
 Next Steps
 ----------
 
 - Review :doc:`output_format` to understand pipeline outputs
-- See :doc:`troubleshooting` for common issues and solutions
 - Check :doc:`pipeline_details` for technical implementation details

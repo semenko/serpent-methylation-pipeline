@@ -2,9 +2,6 @@
 # For the full list of built-in configuration values, see:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-import os
-import sys
-
 # -- Project information -----------------------------------------------------
 project = 'Serpent Methylation Pipeline'
 copyright = '2024, Nick Semenkovich'
@@ -13,9 +10,6 @@ release = '1.0.0'
 
 # -- General configuration ---------------------------------------------------
 extensions = [
-    'sphinx.ext.autodoc',
-    'sphinx.ext.viewcode',
-    'sphinx.ext.napoleon',
     'sphinx.ext.intersphinx',
     'sphinx.ext.githubpages',
     'myst_parser',
@@ -30,14 +24,11 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # -- Options for HTML output -------------------------------------------------
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
+html_static_path = []
 
 # Theme options
 html_theme_options = {
-    'canonical_url': '',
-    'analytics_id': '',
     'logo_only': False,
-    'display_version': True,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': False,
     'vcs_pageview_mode': '',
@@ -66,7 +57,6 @@ myst_enable_extensions = [
     "dollarmath",
     "html_admonition",
     "html_image",
-    "linkify",
     "replacements",
     "smartquotes",
     "substitution",
