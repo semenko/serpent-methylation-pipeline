@@ -1,6 +1,6 @@
 # Configuration
 
-There is no configuration file yet: `config/config.yaml` is a placeholder and is not read. (PRs welcome!)
+There is no configuration file. Samples are defined in `.csv` files, run modes are chosen with `--config` flags, and analysis parameters are set in the Snakefile.
 
 ## General Settings
 

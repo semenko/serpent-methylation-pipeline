@@ -4,7 +4,7 @@
 
 # -- Project information -----------------------------------------------------
 project = 'Serpent Methylation Pipeline'
-copyright = '2024, Nick Semenkovich'
+copyright = '2023-2026, Nick Semenkovich'
 author = 'Nick Semenkovich'
 release = '1.0.0'
 
