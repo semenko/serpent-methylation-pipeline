@@ -14,6 +14,7 @@
 
 import os
 import pathlib
+import re
 import glob
 import sys
 
@@ -144,6 +145,29 @@ REQUIRED_COLUMNS = [
     "md5sum_R2",
 ]
 
+# Names and paths are interpolated into shell commands unquoted, so we refuse characters the shell
+# (or Snakemake's own {{}} formatting) would reinterpret, rather than run the wrong command.
+UNSAFE_PATH_CHARS = re.compile(r"""[\s'"`$&|;<>()*?\[\]{}!#~\\]""")
+
+
+def check_shell_safe(what, values, allow_slash=False):
+    """Raise if any name/path contains whitespace or shell-special characters (or '/', for names)."""
+    bad = sorted(
+        {
+            v
+            for v in values
+            if UNSAFE_PATH_CHARS.search(v) or (not allow_slash and "/" in v)
+        }
+    )
+    if bad:
+        raise ValueError(
+            f"{what} must not contain whitespace or shell-special characters"
+            f"{'' if allow_slash else ' or slashes'}. Please rename: {bad}"
+        )
+
+
+check_shell_safe("The path to this repository", [DATA_PATH], allow_slash=True)
+
 if not data_config_files:
     raise FileNotFoundError(f"No experiment .csv files found in {DATA_PATH}/")
 
@@ -157,9 +181,20 @@ for filename in data_config_files:
 
     print(f"Parsing experiment: {experiment}", file=sys.stderr)
 
+    # The _subsampled suffix is how the rules tell generated subsampled data from your inputs (see raw_fastq)
+    if experiment.endswith("_subsampled"):
+        raise ValueError(
+            f"{filename}: experiment names ending in '_subsampled' are reserved for the pipeline's own "
+            "subsampled output. Please rename this .csv (and its data directory)."
+        )
+    check_shell_safe("Experiment names (.csv filenames)", [experiment])
+
     # Load the .csv of our sample data. Everything is read as text (utf-8-sig drops an Excel byte-order mark),
-    # so numeric-looking sample IDs stay strings and checksums keep their leading zeros.
-    experiment_df = pd.read_csv(filename, dtype=str, encoding="utf-8-sig")
+    # so numeric-looking sample IDs stay strings and checksums keep their leading zeros. keep_default_na=False
+    # stops pandas treating IDs like "NA" or "NULL" as missing: only empty fields are (handled below).
+    experiment_df = pd.read_csv(
+        filename, dtype=str, encoding="utf-8-sig", keep_default_na=False
+    )
 
     missing_columns = [c for c in REQUIRED_COLUMNS if c not in experiment_df.columns]
     if missing_columns:
@@ -187,6 +222,13 @@ for filename in data_config_files:
             f"\tWarning: Ignoring {dropped} samples from experiment '{experiment}' that are missing required values.",
             file=sys.stderr,
         )
+
+    check_shell_safe(f"sample_id values in {filename}", experiment_df["sample_id"])
+    check_shell_safe(
+        f"path_R1/path_R2 values in {filename}",
+        pd.concat([experiment_df["path_R1"], experiment_df["path_R2"]]),
+        allow_slash=True,
+    )
 
     experiment_df["method"] = experiment_df["method"].map(normalize_method)
     unknown_methods = sorted(set(experiment_df["method"]) - {"emseq", "bsseq"})

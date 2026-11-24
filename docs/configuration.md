@@ -38,6 +38,10 @@ example with many such columns (`source`, `cell_type`, `batch` and so on).
 **What is checked:**
 
 - A CSV that lacks a required column is an error.
+- Experiment names (the CSV filenames), `sample_id` values and read filenames must not contain whitespace or
+  shell-special characters (such as quotes, `$`, `&`, `*` or brackets), because they become paths in shell
+  commands. The same goes for the path of the repository itself. Any of these is an error.
+- An experiment name must not end in `_subsampled`, which is reserved for the pipeline's subsampled output.
 - Rows missing a required value are skipped with a warning.
 - A `sample_id` used twice, in any experiment, is an error.
 - An unrecognized `method` gives a warning, and the sample is trimmed as EM-seq.
